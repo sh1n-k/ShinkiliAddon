@@ -20,16 +20,18 @@
 ## 주요 기능 Features
 
 - 추천 주문을 사용자 지정 색상에 매핑합니다.
+- 별도 쿨다운 박스에 우선순위 기반 사용자 지정 스킬 신호를 표시합니다.
 - 미리 여러 빈 슬롯을 두지 않고 검색 중심 편집 흐름을 제공합니다.
 - 저장된 주문별로 보조 마커, GCD spiral, 선택적 `Move Glow`를 표시할 수 있습니다.
 - 캐스팅, 채널링, 강화 상태용 예약색 오버라이드를 지원합니다.
-- 인디케이터 크기와 위치를 조정할 수 있습니다.
+- 메인 인디케이터와 쿨다운 박스의 크기와 위치를 각각 조정할 수 있습니다.
 
 - Maps recommended spells to user-selected colors.
+- Shows a separate cooldown box for priority-based custom spell signals.
 - Uses a search-first editing flow instead of preallocated empty slots.
 - Supports a helper marker, GCD spiral, and optional move glow per saved spell.
 - Supports reserved color overrides for casting, channeling, and empower states.
-- Includes indicator size and position controls.
+- Includes independent size and position controls for the main indicator and cooldown box.
 
 <a id="project-structure"></a>
 ## 프로젝트 구조 Project Structure
@@ -78,9 +80,11 @@ Open the addon settings.
 ## 비고 Notes
 
 - 이 저장소는 애드온 소스 파일과 로컬 동기화 스크립트만 추적합니다.
-- 애드온은 하나의 메인 인디케이터와 몇 개의 보조 신호를 중심으로 설계되어 있습니다.
+- 애드온은 추천 기반 메인 인디케이터와 사용자 정의 쿨다운 박스를 함께 제공합니다.
 - 추천 주문 표시 가능 여부는 Blizzard Assisted Combat 제공 상태에 따라 달라집니다.
+- 쿨다운 박스는 사용자가 저장한 주문 목록과 우선순위를 기준으로 직접 판정합니다.
 
 - This repository tracks only the addon source files and the local sync helper.
-- The addon is designed around a single main indicator plus lightweight secondary signals.
+- The addon includes a recommendation-driven main indicator plus a user-defined cooldown box.
 - Recommendation availability depends on Blizzard Assisted Combat being available.
+- The cooldown box is evaluated from user-saved spells and priorities instead of Assisted Combat recommendations.
