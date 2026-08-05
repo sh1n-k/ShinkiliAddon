@@ -1,9 +1,10 @@
-## Interface: 120000, 120001, 120005
+## Interface: 120000, 120001, 120005, 120100
 ## Title: Shinkili
 ## Notes: Color signal addon for Blizzard Assisted Combat recommendations
 ## Author: Codex
-## Version: 0.1.0
+## Version: 0.1.1
 ## IconTexture: Interface\Buttons\WHITE8X8
 ## SavedVariables: ShinkiliDB, BlizzShinDB
 
+ShinkiliLogic.lua
 Shinkili.lua

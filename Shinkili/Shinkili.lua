@@ -5,6 +5,8 @@ local VISIBLE_MAPPING_ROWS = 7
 local MAPPING_ROW_HEIGHT = 32
 local GCD_SPELL_ID = 61304
 
+local Logic = ShinkiliLogic
+
 local defaults = {
     locked = true,
     size = 64,
@@ -211,17 +213,26 @@ local function db()
 end
 
 local function clamp(value, minimum, maximum)
-    if value < minimum then
-        return minimum
-    end
-    if value > maximum then
-        return maximum
-    end
-    return value
+    return Logic.clamp(value, minimum, maximum)
 end
 
 local function trim(text)
-    return (text or ""):match("^%s*(.-)%s*$") or ""
+    return Logic.trim(text)
+end
+
+local function sanitizeConfig()
+    return {
+        sizeDefault = defaults.size,
+        xDefault = defaults.x,
+        yDefault = defaults.y,
+        pointDefault = defaults.point,
+        relativePointDefault = defaults.relativePoint,
+        legacyMappingSlots = LEGACY_MAPPING_SLOTS,
+        colorPaletteSize = #COLOR_PALETTE,
+        markerPaletteSize = #MARKER_PALETTE,
+        reservedOverrideSize = #RESERVED_OVERRIDE_PALETTE,
+        defaultOverrides = defaults.overrides,
+    }
 end
 
 local function getSpellNameSafe(spellId)
@@ -299,16 +310,7 @@ local function getOverrideColorIndex(stateKey)
 end
 
 local function copyDefaultOverrides()
-    local overrides = {}
-
-    for stateKey, config in pairs(defaults.overrides) do
-        overrides[stateKey] = {
-            enabled = config.enabled,
-            colorIndex = config.colorIndex,
-        }
-    end
-
-    return overrides
+    return Logic.copyDefaultOverrides(defaults.overrides)
 end
 
 local function rememberRecommendedSpell(spellId)
@@ -399,57 +401,15 @@ local function getAssignedMoveGlowEnabled(spellId)
 end
 
 local function isColorUsedByOtherMapping(mappingIndex, colorIndex)
-    for index, mapping in ipairs(db().mappings) do
-        if index ~= mappingIndex and tonumber(mapping.colorIndex) == colorIndex then
-            return true
-        end
-    end
-    return false
+    return Logic.isColorUsedByOtherMapping(db().mappings, mappingIndex, colorIndex)
 end
 
 local function getSuggestedMarkerIndex(mappingIndex)
-    local counts = {}
-
-    for index = 1, #MARKER_PALETTE do
-        counts[index] = 0
-    end
-
-    for index, mapping in ipairs(db().mappings) do
-        if index ~= mappingIndex then
-            local markerIndex = tonumber(mapping.markerIndex)
-            if markerIndex and counts[markerIndex] ~= nil then
-                counts[markerIndex] = counts[markerIndex] + 1
-            end
-        end
-    end
-
-    local bestIndex = 1
-    local bestCount = counts[1]
-    for markerIndex = 1, #MARKER_PALETTE do
-        if counts[markerIndex] < bestCount then
-            bestIndex = markerIndex
-            bestCount = counts[markerIndex]
-        end
-        if counts[markerIndex] == 0 then
-            return markerIndex
-        end
-    end
-
-    return bestIndex
+    return Logic.getSuggestedMarkerIndex(db().mappings, mappingIndex, #MARKER_PALETTE)
 end
 
 local function matchesSearch(spellId)
-    local query = trim(state.searchText):lower()
-    if query == "" then
-        return true
-    end
-
-    local spellName = getSpellNameSafe(spellId):lower()
-    if spellName:find(query, 1, true) then
-        return true
-    end
-
-    return tostring(spellId):find(query, 1, true) ~= nil
+    return Logic.matchesSearch(spellId, getSpellNameSafe(spellId), state.searchText)
 end
 
 local function getSpellPriority(spellId)
@@ -631,126 +591,7 @@ local function getSpellCooldownInfo(spellId)
 end
 
 local function sanitizeSettings()
-    local settings = db()
-    settings.size = clamp(tonumber(settings.size) or defaults.size, 24, 300)
-    settings.x = clamp(math.floor((tonumber(settings.x) or defaults.x) + 0.5), -1000, 1000)
-    settings.y = clamp(math.floor((tonumber(settings.y) or defaults.y) + 0.5), -1000, 1000)
-    settings.point = type(settings.point) == "string" and settings.point or defaults.point
-    settings.relativePoint = type(settings.relativePoint) == "string" and settings.relativePoint or defaults.relativePoint
-    settings.locked = settings.locked ~= false
-    settings.showMarker = settings.showMarker ~= false
-    settings.overrides = type(settings.overrides) == "table" and settings.overrides or {}
-
-    for stateKey, defaultConfig in pairs(defaults.overrides) do
-        local overrideConfig = type(settings.overrides[stateKey]) == "table" and settings.overrides[stateKey] or {}
-        overrideConfig.enabled = overrideConfig.enabled ~= false
-
-        local colorIndex = tonumber(overrideConfig.colorIndex)
-        if colorIndex then
-            colorIndex = math.floor(colorIndex + 0.5)
-        end
-        if not colorIndex or colorIndex < 1 or colorIndex > #RESERVED_OVERRIDE_PALETTE then
-            colorIndex = defaultConfig.colorIndex
-        end
-
-        overrideConfig.colorIndex = colorIndex
-        settings.overrides[stateKey] = overrideConfig
-    end
-
-    local migratedMappings = {}
-    local usedSpell = {}
-    local usedColor = {}
-
-    local function appendMapping(rawMapping)
-        if type(rawMapping) ~= "table" then
-            return
-        end
-
-        local spellId = tonumber(rawMapping.spellId)
-        if not spellId or spellId <= 0 then
-            return
-        end
-
-        spellId = math.floor(spellId + 0.5)
-        if usedSpell[spellId] then
-            return
-        end
-
-        local colorIndex = tonumber(rawMapping.colorIndex)
-        if colorIndex then
-            colorIndex = math.floor(colorIndex + 0.5)
-        end
-        if not colorIndex or colorIndex < 2 or colorIndex > #COLOR_PALETTE or usedColor[colorIndex] then
-            colorIndex = nil
-        end
-
-        local markerIndex = tonumber(rawMapping.markerIndex)
-        if markerIndex then
-            markerIndex = math.floor(markerIndex + 0.5)
-        end
-        if not markerIndex or markerIndex < 1 or markerIndex > #MARKER_PALETTE then
-            markerIndex = nil
-        end
-
-        local mapping = {
-            spellId = spellId,
-            colorIndex = colorIndex,
-            markerIndex = markerIndex,
-            moveGlow = rawMapping.moveGlow == true,
-        }
-
-        table.insert(migratedMappings, mapping)
-        usedSpell[spellId] = true
-        if colorIndex then
-            usedColor[colorIndex] = true
-        end
-    end
-
-    if type(settings.mappings) == "table" then
-        local mappingCount = math.max(#settings.mappings, LEGACY_MAPPING_SLOTS)
-        for index = 1, mappingCount do
-            appendMapping(settings.mappings[index])
-        end
-    end
-
-    if #migratedMappings == 0 and (type(settings.trackedSpells) == "table" or type(settings.spellColors) == "table") then
-        local trackedSpells = settings.trackedSpells or {}
-        local spellColors = settings.spellColors or {}
-        for _, spellId in ipairs(trackedSpells) do
-            appendMapping({
-                spellId = spellId,
-                colorIndex = spellColors[tostring(math.floor((tonumber(spellId) or 0) + 0.5))],
-            })
-        end
-    end
-
-    local markerInUse = {}
-    for _, mapping in ipairs(migratedMappings) do
-        if mapping.markerIndex and not markerInUse[mapping.markerIndex] then
-            markerInUse[mapping.markerIndex] = true
-        else
-            mapping.markerIndex = nil
-        end
-    end
-
-    for _, mapping in ipairs(migratedMappings) do
-        if not mapping.markerIndex then
-            local markerIndex = 1
-            while markerInUse[markerIndex] and markerIndex < #MARKER_PALETTE do
-                markerIndex = markerIndex + 1
-            end
-            if markerInUse[markerIndex] then
-                markerIndex = 1
-            end
-            mapping.markerIndex = markerIndex
-            markerInUse[markerIndex] = true
-        end
-    end
-
-    settings.mappings = migratedMappings
-    settings.trackedSpells = nil
-    settings.spellColors = nil
-    settings.cooldownBox = nil
+    Logic.sanitizeSettings(db(), sanitizeConfig())
 end
 
 local function applyPosition()
@@ -1455,11 +1296,7 @@ local function createOverrideControl(parent, labelText, stateKey, holderWidth, d
 end
 
 local function parseInteger(text)
-    local value = tonumber(text)
-    if not value then
-        return nil
-    end
-    return math.floor(value + 0.5)
+    return Logic.parseInteger(text)
 end
 
 local function refreshAllEditorViews()

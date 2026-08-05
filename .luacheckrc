@@ -4,6 +4,7 @@ max_line_length = false
 globals = {
     "ShinkiliDB",
     "BlizzShinDB",
+    "ShinkiliLogic",
     "SLASH_SHINKILI1",
     "SLASH_SHINKILI2",
     SlashCmdList = {
@@ -24,11 +25,7 @@ read_globals = {
     "FauxScrollFrame_GetOffset",
     "FauxScrollFrame_OnVerticalScroll",
     "FauxScrollFrame_Update",
-    "GetSpellCharges",
     "GetSpellCooldown",
-    "IsPlayerSpell",
-    "IsSpellKnownOrOverridesKnown",
-    "IsUsableSpell",
     "unpack",
     "SlashCmdList",
     "UIDropDownMenu_AddButton",
