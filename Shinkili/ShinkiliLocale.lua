@@ -1,4 +1,4 @@
--- Locale strings for Shinkili (en / ko).
+-- en/ko UI strings. normalize() prefers ShinkiliLogic.normalizeLocale when available.
 
 ShinkiliLocale = ShinkiliLocale or {}
 
@@ -11,13 +11,14 @@ ShinkiliLocale.locales = {
         LANGUAGE = "Language",
         LANG_EN = "English",
         LANG_KO = "한국어",
+        SELECT_SPELL = "Select spell",
         MAIN_TITLE = "Main Highlight",
         MAIN_SUBTITLE = "Blizzard Assisted Combat recommendation is shown here. Search current-spec spells and manage only the mappings you save.",
         CURRENT_RECOMMENDATION = "Current recommendation: %s",
         CURRENT_NONE = "None",
         QUICK_EDITOR = "Quick Editor",
         SEARCH = "Search",
-        SEARCH_HINT = "Search filters the selector and the saved list. Current spec only, with current/recent recommendations shown first.",
+        SEARCH_HINT = "Search filters the Main selector and saved list only. Current spec; recent recommendations first.",
         ADD = "Add",
         UPDATE = "Update",
         PREVIEW = "Preview",
@@ -31,24 +32,26 @@ ShinkiliLocale.locales = {
         DELETE = "Delete",
         NO_MAPPINGS = "No saved mappings yet. Pick one spell above, choose a color, then add it.",
         STATE_OVERRIDES = "State Overrides",
-        STATE_OVERRIDES_HINT = "Reserved colors below are separate from spell colors and cannot be assigned to mappings.",
+        STATE_OVERRIDES_HINT = "Reserved colors for cast states only (not mapping colors).",
         CASTING = "Casting",
         CHANNELING = "Channeling",
         EMPOWER = "Empower",
-        INDICATOR = "Indicator",
+        INDICATOR = "Main indicator",
         SIZE = "Size",
         X = "X",
         Y = "Y",
-        SHOW_MARKER = "Show Marker",
+        SHOW_MARKER = "Show marker",
         UNLOCK = "Unlock",
         LOCK = "Lock",
         RESET_DEFAULTS = "Reset Defaults",
         CLOSE = "Close",
+        MINIMAP_BUTTON = "Minimap button",
         DEFENSE_TITLE = "Defense Box",
         DEFENSE_SUBTITLE = "Shows one separate color box for the highest-priority defense skill that is currently usable.",
         DEFENSE_ENABLE = "Enable defense box",
         DEFENSE_LOCKED = "Lock defense box",
-        DEFENSE_SIZE = "Box size",
+        DEFENSE_SIZE = "Size",
+        DEFENSE_PLACEMENT = "Defense box placement",
         DEFENSE_LIST = "Defense skills (priority order)",
         DEFENSE_HINT = "Top entry wins when multiple skills are usable. Use Up/Down to change priority.",
         DEFENSE_EMPTY = "No defense skills yet. Pick a spell and color, then add it.",
@@ -110,13 +113,14 @@ ShinkiliLocale.locales = {
         LANGUAGE = "언어",
         LANG_EN = "English",
         LANG_KO = "한국어",
+        SELECT_SPELL = "주문 선택",
         MAIN_TITLE = "메인 하이라이트",
         MAIN_SUBTITLE = "블리자드 어시스트 전투 추천이 여기에 표시됩니다. 현재 전문화 주문을 검색해 저장한 매핑만 관리합니다.",
         CURRENT_RECOMMENDATION = "현재 추천: %s",
         CURRENT_NONE = "없음",
         QUICK_EDITOR = "빠른 편집",
         SEARCH = "검색",
-        SEARCH_HINT = "검색은 선택기와 저장 목록을 함께 필터합니다. 현재 전문화만 표시하며, 현재/최근 추천이 먼저 나옵니다.",
+        SEARCH_HINT = "검색은 메인 탭 선택기·저장 목록만 필터합니다. 현재 전문화, 최근 추천 우선.",
         ADD = "추가",
         UPDATE = "수정",
         PREVIEW = "미리보기",
@@ -130,11 +134,11 @@ ShinkiliLocale.locales = {
         DELETE = "삭제",
         NO_MAPPINGS = "저장된 매핑이 없습니다. 위에서 주문과 색을 고른 뒤 추가하세요.",
         STATE_OVERRIDES = "상태 오버라이드",
-        STATE_OVERRIDES_HINT = "아래 예약 색은 주문 색과 분리되며 매핑에 할당할 수 없습니다.",
+        STATE_OVERRIDES_HINT = "시전 상태용 예약 색만 사용합니다(매핑 색과 별개).",
         CASTING = "시전",
         CHANNELING = "채널링",
         EMPOWER = "강화",
-        INDICATOR = "인디케이터",
+        INDICATOR = "메인 인디케이터",
         SIZE = "크기",
         X = "X",
         Y = "Y",
@@ -143,11 +147,13 @@ ShinkiliLocale.locales = {
         LOCK = "잠금",
         RESET_DEFAULTS = "기본값 초기화",
         CLOSE = "닫기",
+        MINIMAP_BUTTON = "미니맵 버튼",
         DEFENSE_TITLE = "방어 박스",
         DEFENSE_SUBTITLE = "사용 가능한 방어 스킬 중 우선순위가 가장 높은 하나를 별도 색 박스로 표시합니다.",
         DEFENSE_ENABLE = "방어 박스 사용",
         DEFENSE_LOCKED = "방어 박스 잠금",
-        DEFENSE_SIZE = "박스 크기",
+        DEFENSE_SIZE = "크기",
+        DEFENSE_PLACEMENT = "방어 박스 배치",
         DEFENSE_LIST = "방어 스킬 (우선순위 순)",
         DEFENSE_HINT = "여러 스킬이 사용 가능하면 목록 위쪽이 우선입니다. 위/아래로 순서를 바꿉니다.",
         DEFENSE_EMPTY = "방어 스킬이 없습니다. 주문과 색을 고른 뒤 추가하세요.",
@@ -204,6 +210,9 @@ ShinkiliLocale.locales = {
 }
 
 function ShinkiliLocale.normalize(locale)
+    if ShinkiliLogic and ShinkiliLogic.normalizeLocale then
+        return ShinkiliLogic.normalizeLocale(locale)
+    end
     if locale == "ko" or locale == "kr" or locale == "koKR" then
         return "ko"
     end

@@ -1,5 +1,4 @@
--- Pure domain helpers for Shinkili (no WoW API dependency).
--- Loaded before Shinkili.lua in-game; dofile()'d by unit tests.
+-- Pure domain for Shinkili (no WoW API). TOC loads before Shinkili.lua; tests dofile this file.
 
 ShinkiliLogic = ShinkiliLogic or {}
 local Logic = ShinkiliLogic
@@ -16,6 +15,14 @@ end
 
 function Logic.trim(text)
     return (text or ""):match("^%s*(.-)%s*$") or ""
+end
+
+function Logic.normalizeLocale(locale)
+    local raw = tostring(locale or "en")
+    if raw == "ko" or raw == "kr" or raw == "koKR" or raw:find("ko") then
+        return "ko"
+    end
+    return "en"
 end
 
 function Logic.parseInteger(text)
@@ -90,10 +97,7 @@ function Logic.copyDefaultOverrides(defaultOverrides)
     return overrides
 end
 
---- Migrate and sanitize mapping list + placement fields on a settings table (mutates).
---- config fields:
----   legacyMappingSlots, colorPaletteSize, markerPaletteSize, reservedOverrideSize,
----   defaultOverrides (table), sizeDefault, xDefault, yDefault, pointDefault, relativePointDefault
+--- Sanitize saved settings in place (mappings, overrides, defense/procs, locale, placement).
 function Logic.sanitizeSettings(settings, config)
     settings.size = Logic.clamp(tonumber(settings.size) or config.sizeDefault, 24, 300)
     settings.x = Logic.clamp(math.floor((tonumber(settings.x) or config.xDefault or 0) + 0.5), -1000, 1000)
@@ -216,16 +220,7 @@ function Logic.sanitizeSettings(settings, config)
     settings.spellColors = nil
     settings.cooldownBox = nil
 
-    if ShinkiliLocale and ShinkiliLocale.normalize then
-        settings.locale = ShinkiliLocale.normalize(settings.locale)
-    else
-        local raw = tostring(settings.locale or "en")
-        if raw == "ko" or raw == "kr" or raw:find("ko") then
-            settings.locale = "ko"
-        else
-            settings.locale = "en"
-        end
-    end
+    settings.locale = Logic.normalizeLocale(settings.locale)
 
     settings.defense = type(settings.defense) == "table" and settings.defense or {}
     local defenseDefaults = config.defenseDefaults or {}

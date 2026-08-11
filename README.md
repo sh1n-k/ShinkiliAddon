@@ -1,90 +1,43 @@
 # ShinkiliAddon
 
-## 목차 Table of Contents
+WoW retail addon: turns Blizzard Assisted Combat recommendations into configurable color signals.
 
-- [개요 Overview](#overview)
-- [주요 기능 Features](#features)
-- [프로젝트 구조 Project Structure](#project-structure)
-- [로컬 설치 대상 Local Install Target](#local-install-target)
-- [개발 Development](#development)
-- [비고 Notes](#notes)
+## Features
+- Map recommended spells to colors (main box)
+- Defense tab: separate priority color box for usable defensive skills
+- Procs tab: active spell overlays override the main box
+- English / Korean UI language (saved)
+- Minimap button and `/sk` for settings
 
-<a id="overview"></a>
-## 개요 Overview
+## Layout
+```
+Shinkili/
+  Shinkili.toc
+  ShinkiliLocale.lua   # en/ko strings
+  ShinkiliLogic.lua    # pure domain (tested)
+  Shinkili.lua         # UI + runtime
+tests/test_logic.lua
+scripts/run_tests.sh
+scripts/sync_to_wow.sh
+```
 
-`Shinkili`는 Blizzard Assisted Combat 추천 주문을 사용자 정의 색상 신호로 바꿔 보여주는 World of Warcraft 애드온입니다.
-
-`Shinkili` is a World of Warcraft addon that turns Blizzard Assisted Combat recommendations into configurable visual signals.
-
-<a id="features"></a>
-## 주요 기능 Features
-
-- 추천 주문을 사용자 지정 색상에 매핑합니다.
-- 방어 탭: 사용 가능한 방어 스킬을 우선순위로 별도 색 박스에 표시합니다.
-- 프록 탭: 활성 프록을 메인 박스 최우선으로 표시합니다.
-- 영어/한국어 UI 언어를 저장합니다.
-- 미니맵 버튼으로 설정에 접근할 수 있습니다.
-
-- Maps recommended spells to user-selected colors.
-- Defense tab: separate priority color box for usable defensive skills.
-- Procs tab: active procs override the main box display.
-- English/Korean UI language is persisted.
-- Minimap button opens settings.
-
-<a id="project-structure"></a>
-## 프로젝트 구조 Project Structure
-
-- [`Shinkili/Shinkili.toc`](./Shinkili/Shinkili.toc)
-- [`Shinkili/Shinkili.lua`](./Shinkili/Shinkili.lua)
-- [`scripts/sync_to_wow.sh`](./scripts/sync_to_wow.sh)
-
-<a id="local-install-target"></a>
-## 로컬 설치 대상 Local Install Target
-
-동기화 스크립트는 아래 경로로 파일을 복사합니다.
-
-The sync script copies files to the path below.
+## Local install
+`./scripts/sync_to_wow.sh` copies into:
 
 `/Applications/World of Warcraft/_retail_/Interface/AddOns/Shinkili`
 
-<a id="development"></a>
-## 개발 Development
-
-애드온 파일을 WoW AddOns 디렉터리로 동기화합니다.
-
-Sync the addon files into the WoW AddOns directory.
-
+## Development
 ```bash
+luacheck Shinkili/
+./scripts/run_tests.sh
 ./scripts/sync_to_wow.sh
 ```
 
-게임 내 UI를 다시 불러옵니다.
+In game: `/reload`, then `/sk` (or minimap left-click).  
+Language: Main tab buttons or `/sk lang en|ko`.  
+Restore minimap button: `/sk minimap on`.
 
-Reload the UI in game.
-
-```text
-/reload
-```
-
-설정 창을 엽니다.
-
-Open the addon settings.
-
-```text
-/sk
-```
-
-미니맵 버튼(좌클릭)으로도 설정 창을 열 수 있습니다. 숨긴 경우 `/sk minimap on`으로 복구합니다.
-
-You can also open settings from the minimap button (left-click). Restore a hidden button with `/sk minimap on`.
-
-<a id="notes"></a>
-## 비고 Notes
-
-- 이 저장소는 애드온 소스 파일과 로컬 동기화 스크립트만 추적합니다.
-- 애드온은 추천 기반 메인 인디케이터를 제공합니다.
-- 추천 주문 표시 가능 여부는 Blizzard Assisted Combat 제공 상태에 따라 달라집니다.
-
-- This repository tracks only the addon source files and the local sync helper.
-- The addon provides a recommendation-driven main indicator.
-- Recommendation availability depends on Blizzard Assisted Combat being available.
+## Notes
+- Display depends on Assisted Combat being available.
+- Defense usability and proc overlays use client APIs that may be limited in combat (fail-closed when unreadable).
+- Repo tracks addon sources, tests, and local helper scripts only.

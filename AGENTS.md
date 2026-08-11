@@ -1,19 +1,42 @@
 # AGENTS.md
 
 ## Scope
-- This repo contains a single WoW addon: `Shinkili/Shinkili.lua` and its `.toc`.
-- Keep changes focused on addon behavior, addon UI, or local dev tooling for this repo.
+- WoW retail addon under `Shinkili/`: color-signal UI on top of Blizzard Assisted Combat.
+- Keep changes limited to addon behavior/UI or local scripts/tests in this repo.
+
+## Layout
+| Path | Role |
+|------|------|
+| `Shinkili/Shinkili.toc` | Load order, interface versions, SavedVariables |
+| `Shinkili/ShinkiliLocale.lua` | en/ko UI strings (`ShinkiliLocale`) |
+| `Shinkili/ShinkiliLogic.lua` | Pure domain (no WoW API): sanitize, priority lists, helpers |
+| `Shinkili/Shinkili.lua` | Runtime UI, options tabs, indicators, slash, minimap |
+| `tests/test_logic.lua` | Unit tests for `ShinkiliLogic` |
+| `scripts/run_tests.sh` | Runs unit tests |
+| `scripts/sync_to_wow.sh` | Copies addon into local WoW AddOns |
+
+## SavedVariables
+- `ShinkiliDB` (primary). Legacy `BlizzShinDB` is still accepted once at load.
+- Important keys: `mappings`, `overrides`, `defense` (entries + box placement), `procs.entries`, `locale` (`en`/`ko`), minimap fields, main indicator placement.
+
+## Runtime model
+- **Main box**: AC `GetNextCastSpell` → mapping color; active **proc** (priority list + overlay) overrides spell/color; cast/channel/empower reserved overrides apply when not on proc/preview.
+- **Defense box**: separate frame; shows highest-priority **usable** defense entry color.
+- **Options**: tabs Main / Defense / Procs; language on Main; minimap button toggles options.
 
 ## Git Safety
-- Small doc or metadata-only changes may be committed directly on `main`.
-- Ask before destructive or high-cost work: mass rename, migration, formatter-wide rewrite, binary changes, large dependency updates, or risky deletes.
+- Small doc/metadata-only changes may land on `main`.
+- Ask before destructive or high-cost work (mass rename, formatter-wide rewrite, large dependency drops).
 
 ## Validation
-- Prefer the documented local flow first: `luacheck Shinkili/Shinkili.lua`, then `./scripts/sync_to_wow.sh`.
-- If runtime verification is needed, use WoW `/reload` and `/sk`.
-- If any validation is skipped, report why and leave the exact command.
+Prefer in order:
+1. `luacheck Shinkili/`
+2. `./scripts/run_tests.sh`
+3. `./scripts/sync_to_wow.sh` when in-game check is needed (`/reload`, `/sk`)
+
+If a step is skipped, report why and the exact command.
 
 ## WoW Lua Guardrails
-- Keep large UI builders split into helper functions. Do not grow a single options-window function into a monolith.
-- WoW Lua can fail when one function captures too many locals through nested callbacks. Before adding more controls, move sections into helper builders or shared handlers.
-- Reuse reset, refresh, and lifecycle handlers instead of duplicating the same long callback in multiple places.
+- Split large options UI into helper builders; avoid one monolithic options function.
+- Nested callbacks that close over many locals can break WoW Lua — extract helpers before adding more controls.
+- Reuse reset/refresh/lifecycle handlers instead of duplicating long callbacks.
