@@ -483,6 +483,8 @@ function Logic.sanitizeSettings(settings, config)
         settings.blacklist.toggleKey = settings.blacklist.toggleKey
     end
     settings.blacklist.entries = Logic.sanitizeBlacklistEntries(settings.blacklist.entries)
+    -- Cooldown suppress list: same shape as entries; filtered with the same master switch.
+    settings.blacklist.cooldowns = Logic.sanitizeBlacklistEntries(settings.blacklist.cooldowns)
     settings.simcAssist = settings.simcAssist ~= false
 
     return settings
@@ -616,6 +618,21 @@ function Logic.isSpellBlacklisted(entries, spellId, filterEnabled, displaySpellI
     return false
 end
 
+--- Permanent blacklist always applies (enabled entries). Cooldown suppress list
+--- only applies when cooldownFilterEnabled is true (UI: cooldown section switch).
+function Logic.isSpellExcluded(entries, cooldownEntries, spellId, cooldownFilterEnabled, displaySpellId, displayOf)
+    if Logic.isSpellBlacklisted(entries, spellId, true, displaySpellId, displayOf) then
+        return true
+    end
+    return Logic.isSpellBlacklisted(
+        cooldownEntries,
+        spellId,
+        cooldownFilterEnabled == true,
+        displaySpellId,
+        displayOf
+    )
+end
+
 --- Confirmed-uncastable verdicts from the host's castability probe. Resource
 --- starvation is deliberately absent: it refills every GCD, so excluding on it
 --- would make the colour churn on every press.
@@ -643,7 +660,9 @@ local BLOCKING_CASTABILITY = {
 ---   D) Otherwise Blizzard's own order: primary, lookahead, first survivor.
 ---
 --- options:
----   blacklistEntries, blacklistEnabled, simcAssist,
+---   blacklistEntries (always excluded when entry enabled),
+---   blacklistCooldowns + blacklistEnabled (cooldown suppress master switch),
+---   simcAssist,
 ---   displayOf(id) -> displayId
 ---   castability(id) -> "ready"|"no_resource"|"unusable"|"out_of_range"|"on_cd"|"unknown"
 ---   gateVerdict(entry) -> "pass"|"fail"|"unknown"
@@ -654,7 +673,9 @@ local BLOCKING_CASTABILITY = {
 function Logic.pickRecommendation(primarySpellId, lookaheadSpellId, rotationList, simcEntries, options)
     options = options or {}
     local blacklistEntries = options.blacklistEntries
-    local blacklistEnabled = options.blacklistEnabled == true
+    local blacklistCooldowns = options.blacklistCooldowns
+    -- Master switch only for the cooldown-suppress list (permanent BL ignores it).
+    local cooldownFilterEnabled = options.blacklistEnabled == true
     local simcAssist = options.simcAssist == true
     local displayOf = options.displayOf
     local castabilityOf = options.castability
@@ -684,7 +705,14 @@ function Logic.pickRecommendation(primarySpellId, lookaheadSpellId, rotationList
             return true
         end
         local disp = displayId(spellId)
-        return Logic.isSpellBlacklisted(blacklistEntries, spellId, blacklistEnabled, disp, displayOf)
+        return Logic.isSpellExcluded(
+            blacklistEntries,
+            blacklistCooldowns,
+            spellId,
+            cooldownFilterEnabled,
+            disp,
+            displayOf
+        )
     end
 
     -- Stage A: ordered live pool, keyed only by display id so a base id can never

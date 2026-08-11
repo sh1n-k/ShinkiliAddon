@@ -268,6 +268,17 @@ check("blacklist disabled kept", bl[2].enabled == false)
 check("blacklist filter off ignores", Logic.isSpellBlacklisted(bl, 7, false) == false)
 check("blacklist enabled hits", Logic.isSpellBlacklisted(bl, 7, true) == true)
 check("blacklist disabled entry skipped", Logic.isSpellBlacklisted(bl, 8, true) == false)
+
+local cds = Logic.sanitizeBlacklistEntries({
+    {spellId = 6673, enabled = true},
+    {spellId = 1160, enabled = false},
+})
+check("cooldown list unique size", #cds == 2)
+check("exclude via cooldown list when filter on", Logic.isSpellExcluded(bl, cds, 6673, true) == true)
+check("exclude ignores disabled cooldown entry", Logic.isSpellExcluded(bl, cds, 1160, true) == false)
+check("permanent blacklist hits even if cooldown filter off", Logic.isSpellExcluded(bl, cds, 7, false) == true)
+check("cooldown list ignored when filter off", Logic.isSpellExcluded({}, cds, 6673, false) == false)
+check("cooldown list active when filter on", Logic.isSpellExcluded({}, cds, 6673, true) == true)
 --------------------------------------------------------------------------------
 -- pickRecommendation
 --
@@ -431,11 +442,38 @@ check("all-blocked pool still shows AC primary", id == 50 and reason == "ac_prim
 
 id, reason = Logic.pickRecommendation(10, 20, {30}, nil, {
     simcAssist = false,
-    blacklistEnabled = true,
+    blacklistEnabled = false,
     blacklistEntries = {{spellId = 10, enabled = true}},
     castability = castabilityFrom(),
 })
-check("blacklisted primary uses lookahead", id == 20 and reason == "ac_lookahead")
+check("permanent blacklist skips primary without cooldown filter", id == 20 and reason == "ac_lookahead")
+
+id, reason = Logic.pickRecommendation(6673, 20, {30}, nil, {
+    simcAssist = false,
+    blacklistEnabled = true,
+    blacklistEntries = {},
+    blacklistCooldowns = {{spellId = 6673, enabled = true}},
+    castability = castabilityFrom(),
+})
+check("cooldown suppress list skips primary when filter on", id == 20 and reason == "ac_lookahead")
+
+id, reason = Logic.pickRecommendation(6673, 20, {30}, nil, {
+    simcAssist = false,
+    blacklistEnabled = false,
+    blacklistEntries = {},
+    blacklistCooldowns = {{spellId = 6673, enabled = true}},
+    castability = castabilityFrom(),
+})
+check("cooldown suppress ignored when filter off", id == 6673 and reason == "ac_primary")
+
+id, reason = Logic.pickRecommendation(6673, 20, {30}, nil, {
+    simcAssist = false,
+    blacklistEnabled = true,
+    blacklistEntries = {},
+    blacklistCooldowns = {{spellId = 6673, enabled = false}},
+    castability = castabilityFrom(),
+})
+check("disabled cooldown entry keeps primary", id == 6673 and reason == "ac_primary")
 
 id, reason = Logic.pickRecommendation(9001, 20, {30}, nil, {
     simcAssist = false,

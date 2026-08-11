@@ -203,8 +203,41 @@ local function getActionBarUsability(spellId, displayId)
     return usable, noPower
 end
 
+--- Does the player currently have this spell as a castable known form?
+--- true / false / nil(unknown). Talent choice nodes matter: picking the
+--- passive side of Ravager/Whirling Blade leaves the active id unlearned, while
+--- IsSpellUsable can still report the active id as ready. Fail open when no API
+--- answers so tests and older clients keep the previous behaviour.
+local function isSpellLearnedActive(spellId)
+    spellId = tonumber(spellId)
+    if not spellId or spellId <= 0 then
+        return nil
+    end
+    if IsPlayerSpell then
+        local ok, known = pcall(IsPlayerSpell, spellId)
+        if ok and known == true then
+            return true
+        end
+        if ok and known == false then
+            return false
+        end
+    end
+    -- Some override/transform forms only show up here.
+    if IsSpellKnownOrOverridesKnown then
+        local ok, known = pcall(IsSpellKnownOrOverridesKnown, spellId)
+        if ok and known == true then
+            return true
+        end
+        if ok and known == false and not IsPlayerSpell then
+            return false
+        end
+    end
+    return nil
+end
+
 --- usable(tri), notEnoughPower(tri). The game evaluates form, stance, stealth,
---- talents and cast conditions for us, so no static tables are needed.
+--- and many cast conditions for us. Talent *choice-node* ownership is handled
+--- separately by isSpellLearnedActive -- do not rely on usable alone for that.
 local function readSpellUsable(spellId, displayId)
     if C_Spell and C_Spell.IsSpellUsable then
         local ok, usable, noPower = pcall(C_Spell.IsSpellUsable, spellId)
@@ -301,11 +334,29 @@ end
 
 local function computeSpellCastability(spellId)
     local displayId = Eval.getDisplaySpellId(spellId)
+    local usableDisplayId = displayId
     if displayId == spellId then
-        displayId = nil
+        usableDisplayId = nil
     end
 
-    local usable, notEnoughPower = readSpellUsable(spellId, displayId)
+    -- Ownership before usability. An unlearned (or passive-side) spell must not
+    -- survive as "ready" just because IsSpellUsable is optimistic.
+    local learned = isSpellLearnedActive(spellId)
+    if learned ~= true and displayId and displayId ~= spellId then
+        local learnedDisplay = isSpellLearnedActive(displayId)
+        if learnedDisplay == true then
+            learned = true
+        elseif learned == false and learnedDisplay == false then
+            learned = false
+        elseif learned == nil then
+            learned = learnedDisplay
+        end
+    end
+    if learned == false then
+        return CAST_UNUSABLE
+    end
+
+    local usable, notEnoughPower = readSpellUsable(spellId, usableDisplayId)
     local resourceShort = false
     if usable == false then
         if notEnoughPower == true then

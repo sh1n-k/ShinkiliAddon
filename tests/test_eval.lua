@@ -199,6 +199,30 @@ usable[101] = {false, false}
 cooldownStructs[101] = {isActive = false}
 check("structurally unusable is unusable", Eval.getCastability(101) == "unusable")
 
+-- Talent / choice-node ownership: IsSpellUsable can still say ready for an
+-- active id the player did not take (Prot Ravager passive side). IsPlayerSpell
+-- is the filter; when the API is absent the path fails open (tests above).
+freshPass()
+local knownSpells = {[120] = true}
+IsPlayerSpell = function(spellId)
+    return knownSpells[spellId] == true
+end
+usable[120] = {true, false}
+cooldownStructs[120] = {isActive = false}
+usable[121] = {true, false}
+cooldownStructs[121] = {isActive = false}
+check("learned spell with usable ready stays ready", Eval.getCastability(120) == "ready")
+check("unlearned spell is unusable even when IsSpellUsable is true", Eval.getCastability(121) == "unusable")
+check("unlearned is not pickable", Eval.isPickable(121) == false)
+-- Display-id form known, base id not: still allowed (override chains).
+overrides[122] = 123
+knownSpells[123] = true
+usable[122] = {true, false}
+cooldownStructs[122] = {isActive = false}
+check("known via display override is ready", Eval.getCastability(122) == "ready")
+overrides[122] = nil
+IsPlayerSpell = nil
+
 freshPass()
 usable[102] = {false, true}
 cooldownStructs[102] = {isActive = false}

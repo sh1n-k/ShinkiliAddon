@@ -63,6 +63,7 @@ local defaults = {
         enabled = false,
         toggleKey = nil,
         entries = {},
+        cooldowns = {},
     },
     -- Rank mode: among AC live candidates, Assist order (false) or SimC order (true).
     simcAssist = true,
@@ -155,6 +156,7 @@ local state = {
     procEditorSpellId = nil,
     procEditorColorIndex = 2,
     blacklistEditorSpellId = nil,
+    cooldownEditorSpellId = nil,
     bindingListen = false,
 }
 
@@ -347,6 +349,9 @@ local emptyProcText
 local blacklistRows = {}
 local blacklistScrollFrame
 local emptyBlacklistText
+local cooldownExcludeRows = {}
+local cooldownExcludeScrollFrame
+local emptyCooldownExcludeText
 local optionsLayout
 local controlId = 0
 local updateEditorControls
@@ -354,6 +359,7 @@ local updateMappingRows
 local updateDefenseRows
 local updateProcRows
 local updateBlacklistRows
+local updateCooldownExcludeRows
 local syncPlacementControls
 local updateCooldownSpiral
 local refreshMinimapButton
@@ -876,8 +882,10 @@ local function getBlacklistSettings()
         enabled = false,
         toggleKey = nil,
         entries = {},
+        cooldowns = {},
     }
     settings.blacklist.entries = type(settings.blacklist.entries) == "table" and settings.blacklist.entries or {}
+    settings.blacklist.cooldowns = type(settings.blacklist.cooldowns) == "table" and settings.blacklist.cooldowns or {}
     return settings.blacklist
 end
 
@@ -995,6 +1003,7 @@ local function getCurrentRecommendedSpellId(collectDetail)
 
     local spellId, reason, detail = Logic.pickRecommendation(primary, lookahead, rotation, simcEntries, {
         blacklistEntries = blacklist.entries,
+        blacklistCooldowns = blacklist.cooldowns,
         blacklistEnabled = blacklist.enabled == true,
         simcAssist = simcAssist,
         displayOf = Eval.getDisplaySpellId,
@@ -2299,6 +2308,7 @@ local function resetToDefaults()
         enabled = false,
         toggleKey = nil,
         entries = {},
+        cooldowns = {},
     }
     settings.simcAssist = defaults.simcAssist
     settings.cooldownBox = nil
@@ -2311,6 +2321,7 @@ local function resetToDefaults()
     state.procEditorSpellId = nil
     state.procEditorColorIndex = 2
     state.blacklistEditorSpellId = nil
+    state.cooldownEditorSpellId = nil
     state.searchText = ""
     stopBindingListen()
     setPreview(nil)
@@ -3116,59 +3127,8 @@ local function createBlacklistOptionsPanel(frame)
     subtitle:SetText(L("BLACKLIST_SUBTITLE"))
     frame.blacklistSubtitle = subtitle
 
-    local enableCheck = CreateFrame("CheckButton", addonName .. "BlacklistEnable", frame, "UICheckButtonTemplate")
-    enableCheck:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -10)
-    enableCheck.text:SetText(L("BLACKLIST_ENABLE"))
-    enableCheck:SetScript("OnClick", function(self)
-        setBlacklistEnabled(self:GetChecked() and true or false, true)
-    end)
-    frame.blacklistEnable = enableCheck
-
-    local keyLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    keyLabel:SetPoint("TOPLEFT", enableCheck, "BOTTOMLEFT", 0, -10)
-    keyLabel:SetText(L("BLACKLIST_TOGGLE_KEY"))
-    frame.blacklistKeyLabel = keyLabel
-
-    local keyValue = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    keyValue:SetPoint("LEFT", keyLabel, "RIGHT", 10, 0)
-    keyValue:SetWidth(220)
-    keyValue:SetJustifyH("LEFT")
-    frame.blacklistKeyValue = keyValue
-
-    local bindButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    bindButton:SetSize(100, 22)
-    bindButton:SetPoint("TOPLEFT", keyLabel, "BOTTOMLEFT", 0, -8)
-    bindButton:SetText(L("BLACKLIST_BIND"))
-    bindButton:SetScript("OnClick", function()
-        if state.bindingListen then
-            stopBindingListen()
-        else
-            startBindingListen()
-        end
-    end)
-    frame.blacklistBindButton = bindButton
-
-    local clearButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    clearButton:SetSize(80, 22)
-    clearButton:SetPoint("LEFT", bindButton, "RIGHT", 8, 0)
-    clearButton:SetText(L("BLACKLIST_CLEAR_KEY"))
-    clearButton:SetScript("OnClick", function()
-        getBlacklistSettings().toggleKey = nil
-        stopBindingListen()
-        applyBlacklistBinding()
-        updateBlacklistRows()
-    end)
-    frame.blacklistClearButton = clearButton
-
-    local bindHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bindHint:SetPoint("TOPLEFT", bindButton, "BOTTOMLEFT", 0, -6)
-    bindHint:SetWidth(contentWidth)
-    bindHint:SetJustifyH("LEFT")
-    bindHint:SetText(L("BLACKLIST_BIND_HINT"))
-    frame.blacklistBindHint = bindHint
-
     local filterHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    filterHint:SetPoint("TOPLEFT", bindHint, "BOTTOMLEFT", 0, -8)
+    filterHint:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
     filterHint:SetWidth(contentWidth)
     filterHint:SetJustifyH("LEFT")
     filterHint:SetText(L("BLACKLIST_HINT"))
@@ -3226,6 +3186,9 @@ local function createBlacklistOptionsPanel(frame)
     end)
     frame.blacklistAddButton = addButton
 
+    -- Two shorter lists so blacklist + cooldown sections fit one tab.
+    local BL_SECTION_ROWS = 4
+
     local listLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     listLabel:SetPoint("TOPLEFT", editorRow, "BOTTOMLEFT", 0, -12)
     listLabel:SetText(L("BLACKLIST_LIST"))
@@ -3233,12 +3196,12 @@ local function createBlacklistOptionsPanel(frame)
 
     blacklistScrollFrame = CreateFrame("ScrollFrame", addonName .. "BlacklistScroll", frame, "FauxScrollFrameTemplate")
     blacklistScrollFrame:SetPoint("TOPLEFT", listLabel, "BOTTOMLEFT", 0, -6)
-    blacklistScrollFrame:SetSize(contentWidth - 10, PRIORITY_VISIBLE_ROWS * PRIORITY_ROW_HEIGHT)
+    blacklistScrollFrame:SetSize(contentWidth - 10, BL_SECTION_ROWS * PRIORITY_ROW_HEIGHT)
     blacklistScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
         FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateBlacklistRows)
     end)
 
-    for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+    for rowIndex = 1, BL_SECTION_ROWS do
         local row = CreateFrame("Frame", nil, frame)
         row:SetSize(contentWidth - 24, PRIORITY_ROW_HEIGHT)
         if rowIndex == 1 then
@@ -3268,6 +3231,215 @@ local function createBlacklistOptionsPanel(frame)
     emptyBlacklistText:SetText(L("BLACKLIST_EMPTY"))
     emptyBlacklistText:Hide()
 
+    local cdSection = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    cdSection:SetPoint("TOPLEFT", blacklistScrollFrame, "BOTTOMLEFT", 0, -16)
+    cdSection:SetText(L("BLACKLIST_CD_SECTION"))
+    frame.blacklistCdSection = cdSection
+
+    local enableCheck = CreateFrame("CheckButton", addonName .. "BlacklistEnable", frame, "UICheckButtonTemplate")
+    enableCheck:SetPoint("TOPLEFT", cdSection, "BOTTOMLEFT", 0, -8)
+    enableCheck.text:SetText(L("BLACKLIST_ENABLE"))
+    enableCheck:SetScript("OnClick", function(self)
+        setBlacklistEnabled(self:GetChecked() and true or false, true)
+    end)
+    frame.blacklistEnable = enableCheck
+
+    local keyLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    keyLabel:SetPoint("TOPLEFT", enableCheck, "BOTTOMLEFT", 0, -8)
+    keyLabel:SetText(L("BLACKLIST_TOGGLE_KEY"))
+    frame.blacklistKeyLabel = keyLabel
+
+    local keyValue = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    keyValue:SetPoint("LEFT", keyLabel, "RIGHT", 10, 0)
+    keyValue:SetWidth(220)
+    keyValue:SetJustifyH("LEFT")
+    frame.blacklistKeyValue = keyValue
+
+    local bindButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    bindButton:SetSize(100, 22)
+    bindButton:SetPoint("TOPLEFT", keyLabel, "BOTTOMLEFT", 0, -8)
+    bindButton:SetText(L("BLACKLIST_BIND"))
+    bindButton:SetScript("OnClick", function()
+        if state.bindingListen then
+            stopBindingListen()
+        else
+            startBindingListen()
+        end
+    end)
+    frame.blacklistBindButton = bindButton
+
+    local clearButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    clearButton:SetSize(80, 22)
+    clearButton:SetPoint("LEFT", bindButton, "RIGHT", 8, 0)
+    clearButton:SetText(L("BLACKLIST_CLEAR_KEY"))
+    clearButton:SetScript("OnClick", function()
+        getBlacklistSettings().toggleKey = nil
+        stopBindingListen()
+        applyBlacklistBinding()
+        updateBlacklistRows()
+    end)
+    frame.blacklistClearButton = clearButton
+
+    local bindHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bindHint:SetPoint("TOPLEFT", bindButton, "BOTTOMLEFT", 0, -6)
+    bindHint:SetWidth(contentWidth)
+    bindHint:SetJustifyH("LEFT")
+    bindHint:SetText(L("BLACKLIST_BIND_HINT"))
+    frame.blacklistBindHint = bindHint
+
+    local cdHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    cdHint:SetPoint("TOPLEFT", bindHint, "BOTTOMLEFT", 0, -8)
+    cdHint:SetWidth(contentWidth)
+    cdHint:SetJustifyH("LEFT")
+    cdHint:SetText(L("BLACKLIST_CD_HINT"))
+    frame.blacklistCdHint = cdHint
+
+    local cdEditorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    cdEditorLabel:SetPoint("TOPLEFT", cdHint, "BOTTOMLEFT", 0, -10)
+    cdEditorLabel:SetText(L("BLACKLIST_CD_ADD"))
+    frame.blacklistCdEditorLabel = cdEditorLabel
+
+    local cdEditorRow = CreateFrame("Frame", nil, frame)
+    cdEditorRow:SetSize(contentWidth, 36)
+    cdEditorRow:SetPoint("TOPLEFT", cdEditorLabel, "BOTTOMLEFT", 0, -4)
+
+    local cdSpellDropdown = CreateFrame("Frame", addonName .. "CooldownExcludeSpellDropdown", cdEditorRow, "UIDropDownMenuTemplate")
+    cdSpellDropdown:SetPoint("LEFT", 0, -2)
+    UIDropDownMenu_SetWidth(cdSpellDropdown, 320)
+    UIDropDownMenu_Initialize(cdSpellDropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, spellInfo in ipairs(getFilteredAvailableSpells("")) do
+            info.text = spellInfo.name
+            info.value = spellInfo.spellId
+            info.func = function()
+                state.cooldownEditorSpellId = spellInfo.spellId
+                UIDropDownMenu_SetSelectedValue(cdSpellDropdown, spellInfo.spellId)
+                UIDropDownMenu_SetText(cdSpellDropdown, spellInfo.name)
+            end
+            info.checked = state.cooldownEditorSpellId == spellInfo.spellId
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    local cdAddButton = CreateFrame("Button", nil, cdEditorRow, "GameMenuButtonTemplate")
+    cdAddButton:SetSize(90, 22)
+    cdAddButton:SetPoint("LEFT", cdSpellDropdown, "RIGHT", 4, 2)
+    cdAddButton:SetText(L("ADD"))
+    cdAddButton:SetScript("OnClick", function()
+        local spellId = state.cooldownEditorSpellId
+        if not spellId then
+            return
+        end
+        local blacklist = getBlacklistSettings()
+        blacklist.cooldowns = blacklist.cooldowns or {}
+        for _, entry in ipairs(blacklist.cooldowns) do
+            if entry.spellId == spellId then
+                entry.enabled = true
+                updateCooldownExcludeRows()
+                updateSpellState()
+                return
+            end
+        end
+        table.insert(blacklist.cooldowns, {spellId = spellId, enabled = true})
+        sanitizeSettings()
+        updateCooldownExcludeRows()
+        updateSpellState()
+    end)
+    frame.blacklistCdAddButton = cdAddButton
+
+    local cdListLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    cdListLabel:SetPoint("TOPLEFT", cdEditorRow, "BOTTOMLEFT", 0, -12)
+    cdListLabel:SetText(L("BLACKLIST_CD_LIST"))
+    frame.blacklistCdListLabel = cdListLabel
+
+    cooldownExcludeScrollFrame = CreateFrame("ScrollFrame", addonName .. "CooldownExcludeScroll", frame, "FauxScrollFrameTemplate")
+    cooldownExcludeScrollFrame:SetPoint("TOPLEFT", cdListLabel, "BOTTOMLEFT", 0, -6)
+    cooldownExcludeScrollFrame:SetSize(contentWidth - 10, BL_SECTION_ROWS * PRIORITY_ROW_HEIGHT)
+    cooldownExcludeScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
+        FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateCooldownExcludeRows)
+    end)
+
+    for rowIndex = 1, BL_SECTION_ROWS do
+        local row = CreateFrame("Frame", nil, frame)
+        row:SetSize(contentWidth - 24, PRIORITY_ROW_HEIGHT)
+        if rowIndex == 1 then
+            row:SetPoint("TOPLEFT", cooldownExcludeScrollFrame, "TOPLEFT", 0, 0)
+        else
+            row:SetPoint("TOPLEFT", cooldownExcludeRows[rowIndex - 1], "BOTTOMLEFT", 0, 0)
+        end
+        row.enable = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+        row.enable:SetPoint("LEFT", 0, 0)
+        row.enable:SetSize(24, 24)
+        row.spellText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        row.spellText:SetPoint("LEFT", row.enable, "RIGHT", 8, 0)
+        row.spellText:SetWidth(420)
+        row.spellText:SetJustifyH("LEFT")
+        row.deleteButton = CreateFrame("Button", nil, row, "GameMenuButtonTemplate")
+        row.deleteButton:SetSize(70, 20)
+        row.deleteButton:SetPoint("RIGHT", 0, 0)
+        row.deleteButton:SetText(L("DELETE"))
+        row:Hide()
+        cooldownExcludeRows[rowIndex] = row
+    end
+
+    emptyCooldownExcludeText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    emptyCooldownExcludeText:SetPoint("TOPLEFT", cooldownExcludeScrollFrame, "TOPLEFT", 8, -30)
+    emptyCooldownExcludeText:SetWidth(contentWidth - 40)
+    emptyCooldownExcludeText:SetJustifyH("LEFT")
+    emptyCooldownExcludeText:SetText(L("BLACKLIST_CD_EMPTY"))
+    emptyCooldownExcludeText:Hide()
+
+    local function fillExcludeRows(entries, rows, scrollFrame, emptyText, rowCount, refreshFn)
+        entries = entries or {}
+        local total = #entries
+        local offset = 0
+        if scrollFrame then
+            FauxScrollFrame_Update(scrollFrame, total, rowCount, PRIORITY_ROW_HEIGHT)
+            offset = FauxScrollFrame_GetOffset(scrollFrame)
+        end
+        for rowIndex = 1, rowCount do
+            local row = rows[rowIndex]
+            local entry = entries[offset + rowIndex]
+            if entry then
+                local entryIndex = offset + rowIndex
+                row:Show()
+                row.enable:SetChecked(entry.enabled ~= false)
+                row.spellText:SetText(getSpellNameSafe(entry.spellId))
+                row.deleteButton:SetText(L("DELETE"))
+                row.enable:SetScript("OnClick", function(self)
+                    entry.enabled = self:GetChecked() and true or false
+                    updateSpellState()
+                end)
+                row.deleteButton:SetScript("OnClick", function()
+                    table.remove(entries, entryIndex)
+                    refreshFn()
+                    updateSpellState()
+                end)
+            else
+                row:Hide()
+            end
+        end
+        if emptyText then
+            if total == 0 then
+                emptyText:Show()
+            else
+                emptyText:Hide()
+            end
+        end
+    end
+
+    updateCooldownExcludeRows = function()
+        local blacklist = getBlacklistSettings()
+        fillExcludeRows(
+            blacklist.cooldowns,
+            cooldownExcludeRows,
+            cooldownExcludeScrollFrame,
+            emptyCooldownExcludeText,
+            BL_SECTION_ROWS,
+            updateCooldownExcludeRows
+        )
+    end
+
     updateBlacklistRows = function()
         local blacklist = getBlacklistSettings()
         if frame.blacklistEnable then
@@ -3284,41 +3456,16 @@ local function createBlacklistOptionsPanel(frame)
             frame.blacklistBindButton:SetText(state.bindingListen and L("BLACKLIST_LISTENING") or L("BLACKLIST_BIND"))
         end
 
-        local entries = blacklist.entries or {}
-        local total = #entries
-        local offset = 0
-        if blacklistScrollFrame then
-            FauxScrollFrame_Update(blacklistScrollFrame, total, PRIORITY_VISIBLE_ROWS, PRIORITY_ROW_HEIGHT)
-            offset = FauxScrollFrame_GetOffset(blacklistScrollFrame)
-        end
-        for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
-            local row = blacklistRows[rowIndex]
-            local entry = entries[offset + rowIndex]
-            if entry then
-                local entryIndex = offset + rowIndex
-                row:Show()
-                row.enable:SetChecked(entry.enabled ~= false)
-                row.spellText:SetText(getSpellNameSafe(entry.spellId))
-                row.deleteButton:SetText(L("DELETE"))
-                row.enable:SetScript("OnClick", function(self)
-                    entry.enabled = self:GetChecked() and true or false
-                    updateSpellState()
-                end)
-                row.deleteButton:SetScript("OnClick", function()
-                    table.remove(entries, entryIndex)
-                    updateBlacklistRows()
-                    updateSpellState()
-                end)
-            else
-                row:Hide()
-            end
-        end
-        if emptyBlacklistText then
-            if total == 0 then
-                emptyBlacklistText:Show()
-            else
-                emptyBlacklistText:Hide()
-            end
+        fillExcludeRows(
+            blacklist.entries,
+            blacklistRows,
+            blacklistScrollFrame,
+            emptyBlacklistText,
+            BL_SECTION_ROWS,
+            updateBlacklistRows
+        )
+        if updateCooldownExcludeRows then
+            updateCooldownExcludeRows()
         end
     end
 end
@@ -3636,6 +3783,12 @@ refreshOptionsLocale = function()
         if blacklist.blacklistListLabel then blacklist.blacklistListLabel:SetText(L("BLACKLIST_LIST")) end
         if blacklist.blacklistAddButton then blacklist.blacklistAddButton:SetText(L("ADD")) end
         if emptyBlacklistText then emptyBlacklistText:SetText(L("BLACKLIST_EMPTY")) end
+        if blacklist.blacklistCdSection then blacklist.blacklistCdSection:SetText(L("BLACKLIST_CD_SECTION")) end
+        if blacklist.blacklistCdHint then blacklist.blacklistCdHint:SetText(L("BLACKLIST_CD_HINT")) end
+        if blacklist.blacklistCdEditorLabel then blacklist.blacklistCdEditorLabel:SetText(L("BLACKLIST_CD_ADD")) end
+        if blacklist.blacklistCdListLabel then blacklist.blacklistCdListLabel:SetText(L("BLACKLIST_CD_LIST")) end
+        if blacklist.blacklistCdAddButton then blacklist.blacklistCdAddButton:SetText(L("ADD")) end
+        if emptyCooldownExcludeText then emptyCooldownExcludeText:SetText(L("BLACKLIST_CD_EMPTY")) end
     end
 
     updateEditorControls()
@@ -3864,30 +4017,31 @@ local function createMinimapButton()
     button:RegisterForDrag("LeftButton")
     button:SetMovable(true)
 
+    -- Layout matches LibDBIcon mainline (RaiderIO / Leatrix Plus).
     local background = button:CreateTexture(nil, "BACKGROUND")
-    background:SetSize(18, 18)
-    background:SetPoint("CENTER", 0, 1)
-    background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    background:SetSize(24, 24)
+    background:SetPoint("CENTER")
+    background:SetTexture(136467) -- Interface\\Minimap\\UI-Minimap-Background
 
-    -- Concentric circular discs. TempPortraitAlphaMask is a white circle (not a square),
-    -- so vertex color fills round and stays inside the tracking-border hole (~18px).
-    local discTex = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+    -- Concentric color discs, circular-clipped like RaiderIO icons.
+    local iconMask = "Interface\\Minimap\\UI-Minimap-Background"
     local function addColorDisc(subLevel, size, r, g, b)
         local tex = button:CreateTexture(nil, "ARTWORK", nil, subLevel)
         tex:SetSize(size, size)
-        tex:SetPoint("CENTER", 0, 1)
-        tex:SetTexture(discTex)
+        tex:SetPoint("CENTER")
+        tex:SetMask(iconMask)
+        tex:SetTexture("Interface\\Buttons\\WHITE8X8")
         tex:SetVertexColor(r, g, b, 1)
         return tex
     end
-    addColorDisc(0, 16, 0.70, 0.20, 1.00) -- purple base
-    addColorDisc(1, 11, 0.00, 0.90, 0.25) -- green mid
-    addColorDisc(2, 6, 1.00, 0.82, 0.12)  -- gold core
+    addColorDisc(0, 18, 0.70, 0.20, 1.00) -- purple base (LibDBIcon icon size)
+    addColorDisc(1, 12, 0.00, 0.90, 0.25) -- green mid
+    addColorDisc(2, 7, 1.00, 0.82, 0.12)  -- gold core
 
     local border = button:CreateTexture(nil, "OVERLAY")
-    border:SetSize(53, 53)
-    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-    border:SetPoint("TOPLEFT", -10, 10)
+    border:SetSize(50, 50)
+    border:SetTexture(136430) -- Interface\\Minimap\\MiniMap-TrackingBorder
+    border:SetPoint("TOPLEFT", button, "TOPLEFT")
 
     button.isDragging = false
 
@@ -4046,6 +4200,7 @@ local function printWhyReport()
 
     local spellId, reason, detail = Logic.pickRecommendation(primary, lookahead, rotation, simcEntries, {
         blacklistEntries = blacklist.entries,
+        blacklistCooldowns = blacklist.cooldowns,
         blacklistEnabled = blacklist.enabled == true,
         simcAssist = simcAssist,
         displayOf = Eval.getDisplaySpellId,
