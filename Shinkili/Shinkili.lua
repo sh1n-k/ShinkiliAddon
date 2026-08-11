@@ -3869,18 +3869,20 @@ local function createMinimapButton()
     background:SetPoint("CENTER", 0, 1)
     background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
 
-    -- Signal-square identity (matches main indicator look) without an extra mouse frame.
-    local iconBorder = button:CreateTexture(nil, "ARTWORK")
-    iconBorder:SetSize(16, 16)
-    iconBorder:SetPoint("CENTER", 0, 1)
-    iconBorder:SetTexture("Interface\\Buttons\\WHITE8X8")
-    iconBorder:SetVertexColor(0.05, 0.05, 0.05, 0.95)
-
-    local icon = button:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(12, 12)
-    icon:SetPoint("CENTER", 0, 1)
-    icon:SetTexture("Interface\\Buttons\\WHITE8X8")
-    icon:SetVertexColor(0.00, 0.85, 0.25, 1)
+    -- Concentric circular discs. TempPortraitAlphaMask is a white circle (not a square),
+    -- so vertex color fills round and stays inside the tracking-border hole (~18px).
+    local discTex = "Interface\\CharacterFrame\\TempPortraitAlphaMask"
+    local function addColorDisc(subLevel, size, r, g, b)
+        local tex = button:CreateTexture(nil, "ARTWORK", nil, subLevel)
+        tex:SetSize(size, size)
+        tex:SetPoint("CENTER", 0, 1)
+        tex:SetTexture(discTex)
+        tex:SetVertexColor(r, g, b, 1)
+        return tex
+    end
+    addColorDisc(0, 16, 0.70, 0.20, 1.00) -- purple base
+    addColorDisc(1, 11, 0.00, 0.90, 0.25) -- green mid
+    addColorDisc(2, 6, 1.00, 0.82, 0.12)  -- gold core
 
     local border = button:CreateTexture(nil, "OVERLAY")
     border:SetSize(53, 53)
