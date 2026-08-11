@@ -126,6 +126,183 @@ function Logic.copyDefaultOverrides(defaultOverrides)
     return overrides
 end
 
+--- KeySim needs real Show/Hide. Only show when cast is known-interruptible.
+--- notInterruptibleAccessible: false when value is secret/unreadable (then always hide).
+function Logic.shouldShowInterruptIndicator(isCasting, notInterruptible, notInterruptibleAccessible)
+    if not isCasting then
+        return false
+    end
+    if not notInterruptibleAccessible then
+        return false
+    end
+    return notInterruptible == false
+end
+
+--- Layout for interrupt box anchored above the main indicator.
+--- Returns width, height, gapAboveMain.
+function Logic.interruptBoxLayout(mainSize)
+    local size = Logic.clamp(tonumber(mainSize) or 64, 24, 300)
+    local height = math.max(12, math.floor(size * 0.35 + 0.5))
+    local gap = math.max(4, math.floor(size * 0.08 + 0.5))
+    return size, height, gap
+end
+
+--- First free mapping color index from top of palette (2..colorPaletteSize). Index 1 is Unassigned.
+function Logic.getFirstFreeColorIndex(mappings, mappingIndex, colorPaletteSize)
+    if type(colorPaletteSize) ~= "number" or colorPaletteSize < 2 then
+        return nil
+    end
+    for colorIndex = 2, colorPaletteSize do
+        if not Logic.isColorUsedByOtherMapping(mappings, mappingIndex, colorIndex) then
+            return colorIndex
+        end
+    end
+    return nil
+end
+
+function Logic.normalizeRealmName(realm)
+    if type(realm) ~= "string" then
+        return ""
+    end
+    return (realm:gsub("%s+", ""))
+end
+
+--- Stable character key "Name-Realm" (spaces stripped from realm).
+--- Returns nil when name or realm is missing so migration can defer until login.
+function Logic.characterKey(name, realm)
+    if type(name) ~= "string" or name == "" then
+        return nil
+    end
+    local normalizedRealm = Logic.normalizeRealmName(realm)
+    if normalizedRealm == "" then
+        return nil
+    end
+    return name .. "-" .. normalizedRealm
+end
+
+--- "Name" prefix of a "Name-Realm" key, or nil.
+function Logic.characterNameFromKey(characterKey)
+    if type(characterKey) ~= "string" or characterKey == "" then
+        return nil
+    end
+    local name = characterKey:match("^(.+)%-.+$")
+    if type(name) == "string" and name ~= "" then
+        return name
+    end
+    return nil
+end
+
+local function mappingListHasEntries(mappings)
+    if type(mappings) ~= "table" then
+        return false
+    end
+    for _, mapping in ipairs(mappings) do
+        if type(mapping) == "table" and tonumber(mapping.spellId) then
+            return true
+        end
+    end
+    return false
+end
+
+Logic.mappingListHasEntries = mappingListHasEntries
+
+local function isCharMappingBucket(accountDb, list)
+    if type(accountDb) ~= "table" or type(list) ~= "table" then
+        return false
+    end
+    local charMappings = accountDb.charMappings
+    if type(charMappings) ~= "table" then
+        return false
+    end
+    for _, bucket in pairs(charMappings) do
+        if bucket == list then
+            return true
+        end
+    end
+    return false
+end
+
+--- Move account-wide legacy root `mappings` into `charMappings[targetKey]`.
+--- No-op when `settings.mappings` is already a per-character bucket (live bind).
+--- Defers when no stable target key is known yet.
+function Logic.migrateLegacyCharMappings(accountDb, currentCharacterKey, preferredOwnerKey)
+    if type(accountDb) ~= "table" then
+        return nil
+    end
+
+    accountDb.charMappings = type(accountDb.charMappings) == "table" and accountDb.charMappings or {}
+
+    local root = accountDb.mappings
+    if isCharMappingBucket(accountDb, root) then
+        -- Live bind: root pointer is the active character list — leave it alone.
+        return accountDb.charMappings
+    end
+
+    if mappingListHasEntries(root) then
+        local targetKey = preferredOwnerKey
+        if type(targetKey) ~= "string" or targetKey == "" then
+            targetKey = accountDb.legacyMappingsCharacter
+        end
+        if type(targetKey) ~= "string" or targetKey == "" then
+            targetKey = currentCharacterKey
+        end
+
+        if type(targetKey) ~= "string" or targetKey == "" then
+            return accountDb.charMappings
+        end
+
+        local existing = accountDb.charMappings[targetKey]
+        if not mappingListHasEntries(existing) then
+            accountDb.charMappings[targetKey] = root
+        end
+        accountDb.mappings = nil
+        accountDb.legacyMappingsCharacter = nil
+    else
+        if root ~= nil and not isCharMappingBucket(accountDb, root) then
+            accountDb.mappings = nil
+        end
+        if type(accountDb.legacyMappingsCharacter) == "string" then
+            accountDb.legacyMappingsCharacter = nil
+        end
+    end
+
+    return accountDb.charMappings
+end
+
+--- If an unstable name-only bucket exists and the stable key is empty, move it.
+function Logic.rehomeNameOnlyCharMappings(accountDb, characterKey)
+    if type(accountDb) ~= "table" or type(characterKey) ~= "string" or characterKey == "" then
+        return false
+    end
+    accountDb.charMappings = type(accountDb.charMappings) == "table" and accountDb.charMappings or {}
+    local nameOnly = Logic.characterNameFromKey(characterKey)
+    if not nameOnly or nameOnly == characterKey then
+        return false
+    end
+    local orphan = accountDb.charMappings[nameOnly]
+    if not mappingListHasEntries(orphan) then
+        return false
+    end
+    if mappingListHasEntries(accountDb.charMappings[characterKey]) then
+        return false
+    end
+    accountDb.charMappings[characterKey] = orphan
+    accountDb.charMappings[nameOnly] = nil
+    return true
+end
+
+--- Ensure charMappings[characterKey] is a mapping array; returns that array.
+function Logic.ensureCharMappings(accountDb, characterKey)
+    if type(accountDb) ~= "table" or type(characterKey) ~= "string" or characterKey == "" then
+        return {}
+    end
+    accountDb.charMappings = type(accountDb.charMappings) == "table" and accountDb.charMappings or {}
+    if type(accountDb.charMappings[characterKey]) ~= "table" then
+        accountDb.charMappings[characterKey] = {}
+    end
+    return accountDb.charMappings[characterKey]
+end
+
 --- Sanitize saved settings in place (mappings, overrides, defense/procs, locale, placement).
 function Logic.sanitizeSettings(settings, config)
     settings.size = Logic.clamp(tonumber(settings.size) or config.sizeDefault, 24, 300)

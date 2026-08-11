@@ -66,7 +66,102 @@ local mappings = {
 }
 check("color used by other", Logic.isColorUsedByOtherMapping(mappings, 1, 3) == true)
 check("color free for self", Logic.isColorUsedByOtherMapping(mappings, 1, 2) == false)
+check("first free color from top", Logic.getFirstFreeColorIndex(mappings, nil, 27) == 4)
+check("first free skips used, keeps own", Logic.getFirstFreeColorIndex(mappings, 1, 27) == 2)
+check("first free nil when full", Logic.getFirstFreeColorIndex({
+    {colorIndex = 2}, {colorIndex = 3},
+}, nil, 3) == nil)
 check("suggested marker unused", Logic.getSuggestedMarkerIndex(mappings, nil, 8) == 3)
+
+check("interrupt show when kickable", Logic.shouldShowInterruptIndicator(true, false, true) == true)
+check("interrupt hide when shielded", Logic.shouldShowInterruptIndicator(true, true, true) == false)
+check("interrupt hide when not casting", Logic.shouldShowInterruptIndicator(false, false, true) == false)
+check("interrupt hide when secret/inaccessible", Logic.shouldShowInterruptIndicator(true, false, false) == false)
+local iw, ih, ig = Logic.interruptBoxLayout(64)
+check("interrupt layout width", iw == 64)
+check("interrupt layout height", ih == 22)
+check("interrupt layout gap", ig == 5)
+
+check("character key with realm", Logic.characterKey("Shindra", "아즈샤라") == "Shindra-아즈샤라")
+check("character key strips realm spaces", Logic.characterKey("Foo", "Area 52") == "Foo-Area52")
+check("character key defers without realm", Logic.characterKey("Solo", "") == nil)
+check("character key nil name", Logic.characterKey(nil, "Realm") == nil)
+check("character name from key", Logic.characterNameFromKey("Shindra-아즈샤라") == "Shindra")
+check("character name from bad key", Logic.characterNameFromKey("Solo") == nil)
+
+local account = {
+    mappings = {
+        {spellId = 10, colorIndex = 2},
+        {spellId = 20, colorIndex = 3},
+    },
+    legacyMappingsCharacter = "Shindra-아즈샤라",
+}
+Logic.migrateLegacyCharMappings(account, "Other-Realm", account.legacyMappingsCharacter)
+check("legacy moved to preferred owner", account.charMappings["Shindra-아즈샤라"] ~= nil)
+check("legacy owner has two mappings", #account.charMappings["Shindra-아즈샤라"] == 2)
+check("root mappings cleared", account.mappings == nil)
+check("legacy owner field cleared", account.legacyMappingsCharacter == nil)
+
+local accountCurrent = {
+    mappings = {
+        {spellId = 99, colorIndex = 4},
+    },
+}
+Logic.migrateLegacyCharMappings(accountCurrent, "Me-Realm", nil)
+check("legacy falls back to current character", #accountCurrent.charMappings["Me-Realm"] == 1)
+
+local accountDeferred = {
+    mappings = {
+        {spellId = 7, colorIndex = 2},
+    },
+}
+Logic.migrateLegacyCharMappings(accountDeferred, nil, nil)
+check("legacy defers without character key", accountDeferred.mappings ~= nil and #accountDeferred.mappings == 1)
+
+local liveList = {{spellId = 1, colorIndex = 2}}
+local accountLive = {
+    charMappings = {["Me-Realm"] = liveList},
+    mappings = liveList,
+}
+Logic.migrateLegacyCharMappings(accountLive, "Me-Realm", nil)
+check("live char bucket not treated as legacy", accountLive.mappings == liveList)
+check("live char bucket unchanged", #accountLive.charMappings["Me-Realm"] == 1)
+
+local accountOrphan = {
+    charMappings = {
+        Shindra = {{spellId = 42, colorIndex = 3}},
+    },
+}
+check("rehome name-only bucket", Logic.rehomeNameOnlyCharMappings(accountOrphan, "Shindra-아즈샤라") == true)
+check("rehome target filled", #accountOrphan.charMappings["Shindra-아즈샤라"] == 1)
+check("rehome orphan cleared", accountOrphan.charMappings.Shindra == nil)
+
+local accountOrphanBlocked = {
+    charMappings = {
+        Shindra = {{spellId = 1, colorIndex = 2}},
+        ["Shindra-아즈샤라"] = {{spellId = 2, colorIndex = 3}},
+    },
+}
+check("rehome skips non-empty target", Logic.rehomeNameOnlyCharMappings(accountOrphanBlocked, "Shindra-아즈샤라") == false)
+
+local ensured = Logic.ensureCharMappings({charMappings = {}}, "A-B")
+check("ensure creates empty mapping list", type(ensured) == "table" and #ensured == 0)
+
+-- Two-pass bind: migrate once, then live pointer must survive a second migrate.
+local cycle = {
+    mappings = {{spellId = 10, colorIndex = 2}},
+    charMappings = {},
+}
+Logic.migrateLegacyCharMappings(cycle, "Hero-Realm", nil)
+cycle.mappings = Logic.ensureCharMappings(cycle, "Hero-Realm")
+check("cycle after first migrate has one", #cycle.mappings == 1)
+cycle.mappings = {{spellId = 10, colorIndex = 2, markerIndex = 1}}
+cycle.charMappings["Hero-Realm"] = cycle.mappings
+local liveRef = cycle.mappings
+Logic.migrateLegacyCharMappings(cycle, "Hero-Realm", nil)
+check("cycle second migrate keeps live ref", cycle.mappings == liveRef)
+check("cycle second migrate keeps entries", #cycle.charMappings["Hero-Realm"] == 1)
+
 check("search by name", Logic.matchesSearch(99, "Avenging Wrath", "wrath") == true)
 check("search by id", Logic.matchesSearch(12345, "Foo", "123") == true)
 check("search empty matches all", Logic.matchesSearch(1, "Foo", "  ") == true)

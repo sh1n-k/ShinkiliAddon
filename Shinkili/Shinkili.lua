@@ -240,7 +240,26 @@ markerDot:SetBackdropColor(1, 1, 1, 1)
 markerDot:SetBackdropBorderColor(0.05, 0.05, 0.05, 0.95)
 markerDot:Hide()
 
+-- Pack local-only feature state into one upvalue to stay under Lua's 200-local cap.
+local feature = {}
+
+-- Target interrupt signal for KeySim: real Show/Hide only (no alpha-only hide).
+-- Yellow solid when target cast is known-interruptible; hidden when shielded/secret/unknown.
+feature.interruptBox = CreateFrame("Frame", "ShinkiliInterruptIndicator", UIParent, "BackdropTemplate")
+feature.interruptBox:SetFrameStrata(square:GetFrameStrata())
+feature.interruptBox:SetFrameLevel(square:GetFrameLevel() + 5)
+feature.interruptBox:EnableMouse(false)
+feature.interruptBox:SetBackdrop({
+    bgFile = "Interface/Buttons/WHITE8X8",
+    edgeFile = "Interface/Buttons/WHITE8X8",
+    edgeSize = 2,
+})
+feature.interruptBox:SetBackdropColor(1.00, 1.00, 0.00, 1.00)
+feature.interruptBox:SetBackdropBorderColor(0.05, 0.05, 0.05, 0.95)
+feature.interruptBox:Hide()
+
 local label = square:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+-- Default: above main box. Raised above interrupt box only while the signal is shown.
 label:SetPoint("BOTTOM", square, "TOP", 0, 6)
 label:SetText("PREVIEW")
 label:SetTextColor(0.96, 0.94, 0.86, 1)
@@ -357,6 +376,131 @@ end
 
 local function trim(text)
     return Logic.trim(text)
+end
+
+function feature.characterKey()
+    local name, realm = UnitFullName("player")
+    if (not realm or realm == "") and GetNormalizedRealmName then
+        realm = GetNormalizedRealmName()
+    end
+    if (not realm or realm == "") and GetRealmName then
+        realm = GetRealmName()
+    end
+    return Logic.characterKey(name, realm)
+end
+
+--- Bind settings.mappings to the current character's list (after legacy migration).
+function feature.bindMappings()
+    local settings = db()
+    if not settings then
+        return
+    end
+    local key = feature.characterKey()
+    Logic.migrateLegacyCharMappings(settings, key, settings.legacyMappingsCharacter)
+    if key then
+        Logic.rehomeNameOnlyCharMappings(settings, key)
+        if settings.pendingMappingsReset then
+            settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
+            settings.charMappings[key] = {}
+            settings.pendingMappingsReset = nil
+        end
+        settings.mappings = Logic.ensureCharMappings(settings, key)
+    elseif type(settings.mappings) ~= "table" then
+        settings.mappings = {}
+    end
+end
+
+--- Write sanitized mappings back into charMappings[characterKey].
+function feature.persistMappings()
+    local settings = db()
+    if not settings then
+        return
+    end
+    local key = feature.characterKey()
+    if not key then
+        return
+    end
+    settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
+    settings.charMappings[key] = type(settings.mappings) == "table" and settings.mappings or {}
+end
+
+function feature.applyInterruptLayout()
+    local settings = db()
+    if not settings then
+        return
+    end
+    local width, height, gap = Logic.interruptBoxLayout(settings.size)
+    local box = feature.interruptBox
+    box:SetSize(width, height)
+    box:ClearAllPoints()
+    box:SetPoint("BOTTOM", square, "TOP", 0, gap)
+end
+
+function feature.setLabelForInterrupt(showInterrupt)
+    label:ClearAllPoints()
+    if showInterrupt then
+        label:SetPoint("BOTTOM", feature.interruptBox, "TOP", 0, 4)
+    else
+        label:SetPoint("BOTTOM", square, "TOP", 0, 6)
+    end
+end
+
+--- True when UnitCastingInfo/UnitChannelInfo reported a cast name without using it in `if`.
+--- Secret names mean "casting, unreadable label"; plain nil/empty means not casting.
+--- Always test isSecret before any comparison — equality on secret values is unsafe in 12.0.
+function feature.hasCastName(name)
+    if Secret.isSecret(name) then
+        return true
+    end
+    if name == nil then
+        return false
+    end
+    if type(name) == "string" then
+        return name ~= ""
+    end
+    return false
+end
+
+--- Target cast interruptibility. Returns isCasting, notInterruptible, accessible.
+function feature.getTargetCastInterruptInfo()
+    if UnitCastingInfo then
+        local ok, name, _, _, _, _, _, _, notInterruptible = pcall(UnitCastingInfo, "target")
+        if ok and feature.hasCastName(name) then
+            local plain = Secret.plainBool(notInterruptible)
+            if plain == nil then
+                return true, nil, false
+            end
+            return true, plain, true
+        end
+    end
+
+    if UnitChannelInfo then
+        local ok, name, _, _, _, _, _, notInterruptible = pcall(UnitChannelInfo, "target")
+        if ok and feature.hasCastName(name) then
+            local plain = Secret.plainBool(notInterruptible)
+            if plain == nil then
+                return true, nil, false
+            end
+            return true, plain, true
+        end
+    end
+
+    return false, nil, false
+end
+
+function feature.refreshInterrupt()
+    local isCasting, notInterruptible, accessible = feature.getTargetCastInterruptInfo()
+    local show = Logic.shouldShowInterruptIndicator(isCasting, notInterruptible, accessible)
+    local box = feature.interruptBox
+    if show then
+        box:SetBackdropColor(1.00, 1.00, 0.00, 1.00)
+        box:SetAlpha(1)
+        box:Show()
+        feature.setLabelForInterrupt(true)
+    else
+        box:Hide()
+        feature.setLabelForInterrupt(false)
+    end
 end
 
 local function sanitizeConfig()
@@ -993,7 +1137,9 @@ getSpellCooldownInfo = function(spellId)
 end
 
 local function sanitizeSettings()
+    feature.bindMappings()
     Logic.sanitizeSettings(db(), sanitizeConfig())
+    feature.persistMappings()
 end
 
 local function applyPosition()
@@ -1007,6 +1153,7 @@ local function applySize()
     moveGlowOuter:SetSize(db().size + 20, db().size + 20)
     moveGlowMid:SetSize(db().size + 12, db().size + 12)
     moveGlowInner:SetSize(db().size + 6, db().size + 6)
+    feature.applyInterruptLayout()
     if applyFrameLayers then
         applyFrameLayers()
     end
@@ -1026,6 +1173,8 @@ applyFrameLayers = function()
     moveGlowOuter:SetFrameLevel(math.max(1, level - 3))
     moveGlowMid:SetFrameLevel(math.max(1, level - 2))
     moveGlowInner:SetFrameLevel(math.max(1, level - 1))
+    feature.interruptBox:SetFrameStrata(strata)
+    feature.interruptBox:SetFrameLevel(level + 5)
 
     local defense = settings.defense or defaults.defense
     local dStrata = defense.frameStrata or defaults.defense.frameStrata
@@ -1454,6 +1603,7 @@ end
 local function refreshVisibility()
     refreshPrimaryVisibility()
     refreshDefenseBox()
+    feature.refreshInterrupt()
     updateCurrentSpellText()
 end
 
@@ -1717,7 +1867,13 @@ function updateEditorControls()
     UIDropDownMenu_SetText(editorColorDropdown, getColorName(state.editorColorIndex or 1))
 
     editorActionButton:SetText(getEditorMode())
-    editorActionButton:SetEnabled(state.editorSpellId ~= nil and state.editorColorIndex ~= nil)
+    editorActionButton:SetEnabled(state.editorSpellId ~= nil)
+
+    local mainPanel = optionsPanels and optionsPanels.main
+    if mainPanel and mainPanel.mapCurrentButton then
+        -- Use ticker state only — do not re-run the pick pipeline from UI refresh.
+        mainPanel.mapCurrentButton:SetEnabled(state.currentSpellId ~= nil)
+    end
 
     editorPreviewButton:SetEnabled(previewSpellId ~= nil and previewColorIndex ~= nil)
     if previewSpellId and previewColorIndex and state.previewSpellId == previewSpellId and state.previewColorIndex == previewColorIndex then
@@ -1787,13 +1943,23 @@ local function deleteMappingByIndex(mappingIndex)
 end
 
 local function saveEditorMapping()
-    if not state.editorSpellId or not state.editorColorIndex then
+    if not state.editorSpellId then
         return
     end
 
     local mapping, mappingIndex = getMappingBySpell(state.editorSpellId)
+    local colorIndex = state.editorColorIndex
+    if not colorIndex then
+        colorIndex = Logic.getFirstFreeColorIndex(db().mappings, mappingIndex, #COLOR_PALETTE)
+        if not colorIndex then
+            print("|cff33ff99Shinkili|r " .. L("MSG_MAP_NO_COLOR"))
+            return
+        end
+        state.editorColorIndex = colorIndex
+    end
+
     if mapping then
-        mapping.colorIndex = state.editorColorIndex
+        mapping.colorIndex = colorIndex
         mapping.moveGlow = state.editorMoveGlow == true
         if not mapping.markerIndex then
             mapping.markerIndex = getSuggestedMarkerIndex(mappingIndex)
@@ -1801,7 +1967,7 @@ local function saveEditorMapping()
     else
         table.insert(db().mappings, {
             spellId = state.editorSpellId,
-            colorIndex = state.editorColorIndex,
+            colorIndex = colorIndex,
             markerIndex = getSuggestedMarkerIndex(nil),
             moveGlow = state.editorMoveGlow == true,
         })
@@ -1813,6 +1979,62 @@ local function saveEditorMapping()
 
     sanitizeSettings()
     syncEditorSelection()
+end
+
+--- Map the current Assisted Combat / SimC pick to the first free color.
+--- Uses the pick pipeline (not a proc override display). Skips if already mapped.
+function feature.mapCurrentRecommendation()
+    Eval.beginPass()
+    local spellId = getCurrentRecommendedSpellId() or state.currentSpellId
+    if not spellId then
+        print("|cff33ff99Shinkili|r " .. L("MSG_MAP_NONE"))
+        return false
+    end
+
+    if findMappingIndexBySpell(spellId) then
+        print("|cff33ff99Shinkili|r " .. string.format(L("MSG_MAP_ALREADY"), getSpellNameSafe(spellId)))
+        return false
+    end
+
+    feature.bindMappings()
+    local mappings = db().mappings
+    if type(mappings) ~= "table" then
+        mappings = {}
+        db().mappings = mappings
+    end
+
+    local colorIndex = Logic.getFirstFreeColorIndex(mappings, nil, #COLOR_PALETTE)
+    if not colorIndex then
+        print("|cff33ff99Shinkili|r " .. L("MSG_MAP_NO_COLOR"))
+        return false
+    end
+
+    table.insert(mappings, {
+        spellId = spellId,
+        colorIndex = colorIndex,
+        markerIndex = getSuggestedMarkerIndex(nil),
+        moveGlow = false,
+    })
+
+    state.editorSpellId = spellId
+    state.editorColorIndex = colorIndex
+    state.editorMoveGlow = false
+    rememberRecommendedSpell(spellId)
+
+    sanitizeSettings()
+    syncEditorSelection()
+    if state.optionsOpen then
+        updateEditorControls()
+        updateMappingRows()
+    end
+    refreshVisibility()
+
+    print("|cff33ff99Shinkili|r " .. string.format(
+        L("MSG_MAP_DONE"),
+        getSpellNameSafe(spellId),
+        getColorName(colorIndex)
+    ))
+    return true
 end
 
 function updateMappingRows()
@@ -2051,6 +2273,15 @@ local function resetToDefaults()
     settings.frameLevel = defaults.frameLevel
     settings.overrides = copyDefaultOverrides()
     settings.mappings = {}
+    local charKey = feature.characterKey()
+    settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
+    if charKey then
+        settings.charMappings[charKey] = settings.mappings
+        settings.pendingMappingsReset = nil
+    else
+        -- Character key not ready yet; bindMappings clears this character on next stable key.
+        settings.pendingMappingsReset = true
+    end
     settings.defense = {
         enabled = defaults.defense.enabled,
         locked = defaults.defense.locked,
@@ -2148,11 +2379,21 @@ local function createMainOptionsPanel(frame)
 
     currentSpellText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     currentSpellText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -6)
-    currentSpellText:SetWidth(contentWidth)
+    currentSpellText:SetWidth(contentWidth - 120)
     currentSpellText:SetHeight(20)
     currentSpellText:SetJustifyH("LEFT")
     currentSpellText:SetWordWrap(false)
     currentSpellText:SetText(string.format(L("CURRENT_RECOMMENDATION"), L("CURRENT_NONE")))
+
+    local mapCurrentButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    mapCurrentButton:SetSize(108, 22)
+    mapCurrentButton:SetPoint("TOP", currentSpellText, "TOP", 0, 2)
+    mapCurrentButton:SetPoint("RIGHT", frame, "RIGHT", -4, 0)
+    mapCurrentButton:SetText(L("MAP_CURRENT"))
+    mapCurrentButton:SetScript("OnClick", function()
+        feature.mapCurrentRecommendation()
+    end)
+    frame.mapCurrentButton = mapCurrentButton
 
     local simcCheck = CreateFrame("CheckButton", addonName .. "SimcAssist", frame, "UICheckButtonTemplate")
     simcCheck:SetPoint("TOPLEFT", currentSpellText, "BOTTOMLEFT", 0, -4)
@@ -3296,6 +3537,7 @@ refreshOptionsLocale = function()
     if main then
         if main.mainTitle then main.mainTitle:SetText(L("MAIN_TITLE")) end
         if main.mainSubtitle then main.mainSubtitle:SetText(L("MAIN_SUBTITLE")) end
+        if main.mapCurrentButton then main.mapCurrentButton:SetText(L("MAP_CURRENT")) end
         if main.editorLabel then main.editorLabel:SetText(L("QUICK_EDITOR")) end
         if main.searchHolder and main.searchHolder.label then
             main.searchHolder.label:SetText(L("SEARCH"))
@@ -3748,6 +3990,7 @@ end
 local function printUsage()
     print("|cff33ff99Shinkili|r " .. L("CMD_USAGE"))
     print(L("CMD_OPEN"))
+    print(L("CMD_MAP"))
     print(L("CMD_LOCK"))
     print(L("CMD_UNLOCK"))
     print(L("CMD_MARKER"))
@@ -3882,6 +4125,11 @@ SlashCmdList.SHINKILI = function(msg)
 
     if command == "" then
         toggleOptionsWindow()
+        return
+    end
+
+    if command == "map" then
+        feature.mapCurrentRecommendation()
         return
     end
 
@@ -4023,7 +4271,10 @@ local function initialize()
     ShinkiliDB.frameStrata = ShinkiliDB.frameStrata == nil and defaults.frameStrata or ShinkiliDB.frameStrata
     ShinkiliDB.frameLevel = ShinkiliDB.frameLevel == nil and defaults.frameLevel or ShinkiliDB.frameLevel
     ShinkiliDB.overrides = type(ShinkiliDB.overrides) == "table" and ShinkiliDB.overrides or copyDefaultOverrides()
-    ShinkiliDB.mappings = type(ShinkiliDB.mappings) == "table" and ShinkiliDB.mappings or {}
+    ShinkiliDB.charMappings = type(ShinkiliDB.charMappings) == "table" and ShinkiliDB.charMappings or {}
+    if type(ShinkiliDB.mappings) ~= "table" then
+        ShinkiliDB.mappings = {}
+    end
     ShinkiliDB.defense = type(ShinkiliDB.defense) == "table" and ShinkiliDB.defense or {
         enabled = defaults.defense.enabled,
         locked = defaults.defense.locked,
@@ -4059,6 +4310,7 @@ local function initialize()
     updateSpellState()
     refreshMinimapButton()
 
+    addon:RegisterEvent("PLAYER_LOGIN")
     addon:RegisterEvent("PLAYER_ENTERING_WORLD")
     addon:RegisterEvent("PLAYER_REGEN_ENABLED")
     addon:RegisterEvent("PLAYER_REGEN_DISABLED")
@@ -4071,6 +4323,14 @@ local function initialize()
     if addon.RegisterUnitEvent then
         addon:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
         addon:RegisterUnitEvent("UNIT_AURA", "target")
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_START", "target")
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_STOP", "target")
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_FAILED", "target")
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTED", "target")
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "target")
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "target")
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_INTERRUPTIBLE", "target")
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_NOT_INTERRUPTIBLE", "target")
     end
     addon:RegisterEvent("SPELL_UPDATE_COOLDOWN")
     addon:RegisterEvent("SPELL_UPDATE_CHARGES")
@@ -4114,13 +4374,24 @@ end
 
 -- High-frequency state events: they only feed the tracker. Running the full
 -- refresh on every aura tick and cooldown pulse would burn frames for nothing --
--- the 20Hz ticker already repaints.
+-- the 20Hz ticker already repaints. Target interrupt signal is handled separately.
 local TRACKER_ONLY_EVENTS = {
     UNIT_SPELLCAST_SUCCEEDED = true,
     UNIT_AURA = true,
     SPELL_UPDATE_COOLDOWN = true,
     SPELL_UPDATE_CHARGES = true,
+}
+
+local INTERRUPT_SIGNAL_EVENTS = {
     PLAYER_TARGET_CHANGED = true,
+    UNIT_SPELLCAST_START = true,
+    UNIT_SPELLCAST_STOP = true,
+    UNIT_SPELLCAST_FAILED = true,
+    UNIT_SPELLCAST_INTERRUPTED = true,
+    UNIT_SPELLCAST_CHANNEL_START = true,
+    UNIT_SPELLCAST_CHANNEL_STOP = true,
+    UNIT_SPELLCAST_INTERRUPTIBLE = true,
+    UNIT_SPELLCAST_NOT_INTERRUPTIBLE = true,
 }
 
 addon:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
@@ -4128,6 +4399,17 @@ addon:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         if arg1 == addonName then
             initialize()
         end
+        return
+    end
+
+    if event == "PLAYER_LOGIN" then
+        -- Character name/realm is reliable here; re-bind per-character mappings.
+        sanitizeSettings()
+        if state.optionsOpen then
+            updateEditorControls()
+            updateMappingRows()
+        end
+        updateSpellState()
         return
     end
 
@@ -4141,6 +4423,13 @@ addon:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if ShinkiliTrack then
         ShinkiliTrack.handleEvent(event, arg1, arg2, arg3)
     end
+
+    -- Interrupt signal is independent of the pick pipeline; do not run full refresh.
+    if INTERRUPT_SIGNAL_EVENTS[event] then
+        feature.refreshInterrupt()
+        return
+    end
+
     if TRACKER_ONLY_EVENTS[event] then
         return
     end
