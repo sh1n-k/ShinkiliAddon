@@ -273,39 +273,94 @@ local function readSpellUsable(spellId, displayId)
     return nil, nil
 end
 
---- Charge-spell verdict, or nil when this is not a charge spell at all.
---- true = no charge banked, false = at least one, nil = charge spell but the
---- count is not knowable right now.
-local function chargeVerdict(spellId, maxCharges, recharging, currentCharges)
+--- Tracker banked-charge count for spellId or its display form, or nil.
+local function trackedChargesRemaining(spellId, displayId)
+    if not (ShinkiliTrack and type(ShinkiliTrack.getChargesRemaining) == "function") then
+        return nil
+    end
+    local remaining = ShinkiliTrack.getChargesRemaining(spellId)
+    if remaining ~= nil then
+        return remaining
+    end
+    if displayId and displayId ~= spellId then
+        return ShinkiliTrack.getChargesRemaining(displayId)
+    end
+    return nil
+end
+
+--- Charge-spell verdict for a multi-charge API row.
+--- true = known empty (exclude), false = known banked charge, nil = charge spell
+--- but count unreadable. Not a charge spell → nil, false.
+---
+--- Known-zero policy: plain currentCharges==0 or tracker remaining==0 always
+--- blocks. Unknown is never treated as empty (no regression on secret charges).
+local function chargeVerdict(spellId, displayId, maxCharges, recharging, currentCharges)
     if not (maxCharges and maxCharges > 1) then
         return nil, false
     end
-    -- currentCharges is secret in combat but plain outside it; prefer the real
-    -- number over our reconstruction whenever the client hands it over.
     if currentCharges ~= nil then
         return currentCharges <= 0, true
     end
-    -- isActive is NeverSecret; "not recharging" can only mean full charges.
+    -- isActive is NeverSecret; false means full bank (no recharge running).
     if recharging == false then
         return false, true
     end
-    local remaining = ShinkiliTrack and ShinkiliTrack.getChargesRemaining
-        and ShinkiliTrack.getChargesRemaining(spellId)
+    local remaining = trackedChargesRemaining(spellId, displayId)
     if remaining ~= nil then
         return remaining <= 0, true
     end
     return nil, true
 end
 
+local function readChargeRow(spellId)
+    return Secret.getSpellChargeInfo(spellId)
+end
+
 local function computeCooldownBlocked(spellId)
-    -- Most spells have no charges; skip the per-pass API call once the
-    -- out-of-combat scan has proven that for this one. The scan can be wrong
-    -- (spell data not loaded yet, recharge length unreadable), so the skip is
-    -- re-checked below before it is ever allowed to BLOCK a spell.
+    spellId = tonumber(spellId)
+    if not spellId then
+        return nil
+    end
+    local displayId = Eval.getDisplaySpellId(spellId)
+    if displayId == spellId then
+        displayId = nil
+    end
+
     local skippedChargeRead = ShinkiliTrack and ShinkiliTrack.isChargeSpell
         and ShinkiliTrack.isChargeSpell(spellId) == false
+        and (not displayId or ShinkiliTrack.isChargeSpell(displayId) == false)
+
+    -- Prefer a plain client charge count when present; only then the tracker.
+    -- Known zero from either source hard-filters (safe). Unknown stays open.
+    local maxCharges, recharging, currentCharges
     if not skippedChargeRead then
-        local verdict, isChargeSpell = chargeVerdict(spellId, Secret.getSpellChargeInfo(spellId))
+        maxCharges, recharging, currentCharges = readChargeRow(spellId)
+        if (not maxCharges or maxCharges <= 1) and displayId then
+            local dMax, dRech, dCur = readChargeRow(displayId)
+            if dMax and dMax > 1 then
+                maxCharges, recharging, currentCharges = dMax, dRech, dCur
+            end
+        end
+        if currentCharges ~= nil then
+            if maxCharges and maxCharges > 1 then
+                return currentCharges <= 0
+            end
+        end
+    end
+
+    local tracked = trackedChargesRemaining(spellId, displayId)
+    if tracked == 0 then
+        return true
+    end
+
+    if not skippedChargeRead then
+        local verdict, isChargeSpell = chargeVerdict(
+            spellId,
+            displayId,
+            maxCharges,
+            recharging,
+            currentCharges
+        )
         if isChargeSpell then
             return verdict
         end
@@ -313,11 +368,14 @@ local function computeCooldownBlocked(spellId)
 
     local blocked = Secret.isSpellOnRealCooldown(spellId)
     if blocked == true and skippedChargeRead then
-        -- About to hard-filter the spell out of the pool on the strength of a
-        -- scan that said "no charges". A charge spell with one banked has a
-        -- recharge running and reads exactly like this, so pay for the API call
-        -- here -- on the blocking path only, never on the ready path.
-        local verdict, isChargeSpell = chargeVerdict(spellId, Secret.getSpellChargeInfo(spellId))
+        -- About to hard-filter on a "no charges" scan: re-check the API in case
+        -- this is actually a multi-charge spell with a banked charge.
+        local m, r, c = readChargeRow(spellId)
+        local verdict, isChargeSpell = chargeVerdict(spellId, displayId, m, r, c)
+        if not isChargeSpell and displayId then
+            m, r, c = readChargeRow(displayId)
+            verdict, isChargeSpell = chargeVerdict(spellId, displayId, m, r, c)
+        end
         if isChargeSpell then
             return verdict
         end

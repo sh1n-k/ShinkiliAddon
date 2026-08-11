@@ -291,6 +291,27 @@ freshPass()
 charges[112].currentCharges = 0
 check("readable zero currentCharges blocks", Eval.getCastability(112) == "on_cd")
 
+-- Known-zero from the tracker must exclude even if the OOC scan said "not a
+-- charge spell" (that scan can be wrong; an explicit 0 is safe).
+freshPass()
+charges[115] = {maxCharges = 2, isActive = true}
+cooldownStructs[115] = {isActive = false}
+usable[115] = {true, false}
+ShinkiliTrack.isChargeSpell = function()
+    return false
+end
+ShinkiliTrack.getChargesRemaining = function(spellId)
+    return spellId == 115 and 0 or nil
+end
+check("known zero tracked charges blocks despite non-charge scan",
+    Eval.getCastability(115) == "on_cd")
+ShinkiliTrack.isChargeSpell = function()
+    return nil
+end
+ShinkiliTrack.getChargesRemaining = function()
+    return nil
+end
+
 -- A spell the scan proved has no charges must not pay for a GetSpellCharges
 -- call every pass.
 freshPass()
