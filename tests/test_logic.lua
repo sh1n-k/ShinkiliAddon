@@ -558,6 +558,95 @@ check("simc context st", Logic.getSimcContextEntries(fakeData.specs.TEST_1, fals
 check("simc context aoe", Logic.getSimcContextEntries(fakeData.specs.TEST_1, true)[1].id == 9)
 
 --------------------------------------------------------------------------------
+-- Character + specialization profiles
+--------------------------------------------------------------------------------
+
+check("specKey builds CLASS_N", Logic.specKey("WARRIOR", 3) == "WARRIOR_3")
+check("specKey rejects bad index", Logic.specKey("WARRIOR", 0) == nil)
+
+local deepSrc = {a = {b = 1}}
+local deepDst = Logic.deepCopy(deepSrc)
+deepDst.a.b = 9
+check("deepCopy independence", deepSrc.a.b == 1 and deepDst.a.b == 9)
+
+local account = {
+    size = 40,
+    x = 1,
+    y = 2,
+    point = "CENTER",
+    relativePoint = "CENTER",
+    locked = true,
+    showMarker = true,
+    frameStrata = "HIGH",
+    frameLevel = 50,
+    simcAssist = true,
+    mappings = {},
+    procs = {entries = {{spellId = 100, colorIndex = 2, enabled = true}}},
+    defense = {
+        enabled = true,
+        size = 48,
+        x = 10,
+        y = -10,
+        point = "CENTER",
+        relativePoint = "CENTER",
+        locked = true,
+        frameStrata = "HIGH",
+        frameLevel = 40,
+        entries = {{spellId = 200, colorIndex = 3, enabled = true}},
+    },
+    blacklist = {
+        enabled = true,
+        toggleKey = "F9",
+        entries = {{spellId = 7, enabled = true}},
+        cooldowns = {{spellId = 6673, enabled = true}},
+    },
+    charMappings = {
+        ["Hero-Realm"] = {{spellId = 50, colorIndex = 2, markerIndex = 1, moveGlow = false}},
+    },
+}
+
+Logic.migrateCharSpecProfiles(account, "Hero-Realm")
+check("migrate sets schema version", account.profileSchemaVersion == 2)
+check("migrate creates char profile", type(account.charProfiles["Hero-Realm"]) == "table")
+check("migrate seed has mapping from charMappings",
+    account.charProfiles["Hero-Realm"].seed.mappings[1]
+        and account.charProfiles["Hero-Realm"].seed.mappings[1].spellId == 50)
+check("migrate seed has account proc",
+    account.charProfiles["Hero-Realm"].seed.procs.entries[1]
+        and account.charProfiles["Hero-Realm"].seed.procs.entries[1].spellId == 100)
+check("migrate seed has cooldown exclude",
+    account.charProfiles["Hero-Realm"].seed.blacklist.cooldowns[1]
+        and account.charProfiles["Hero-Realm"].seed.blacklist.cooldowns[1].spellId == 6673)
+check("migrate placement keeps toggle key",
+    account.charProfiles["Hero-Realm"].placement.blacklistToggleKey == "F9")
+
+local prof = Logic.ensureCharProfile(account, "Hero-Realm")
+local arms = Logic.ensureSpecProfile(prof, "WARRIOR_1")
+local fury = Logic.ensureSpecProfile(prof, "WARRIOR_2")
+check("first visit clones seed mappings", arms.mappings[1] and arms.mappings[1].spellId == 50)
+check("second spec also clones seed", fury.mappings[1] and fury.mappings[1].spellId == 50)
+arms.mappings[1].spellId = 999
+check("spec buckets diverge after edit", fury.mappings[1].spellId == 50 and arms.mappings[1].spellId == 999)
+
+local live = {
+    size = 99,
+    defense = {enabled = false, entries = {}, size = 1, x = 0, y = 0},
+    procs = {entries = {}},
+    blacklist = {enabled = false, entries = {}, cooldowns = {}, toggleKey = nil},
+    mappings = {},
+    simcAssist = false,
+}
+Logic.applyCharPlacementToSettings(live, prof.placement)
+Logic.applySpecToSettings(live, arms)
+check("apply placement size from char profile", live.size == 40)
+check("apply diverged mapping from arms", live.mappings[1] and live.mappings[1].spellId == 999)
+check("arms keeps seed simcAssist", arms.simcAssist ~= false)
+
+local before = account.charProfiles["Hero-Realm"].seed.mappings[1].spellId
+Logic.migrateCharSpecProfiles(account, "Hero-Realm")
+check("migrate is idempotent", account.charProfiles["Hero-Realm"].seed.mappings[1].spellId == before)
+
+--------------------------------------------------------------------------------
 -- Locale parity: a reason or command string that exists in one language and not
 -- the other shows up as a raw key in the UI.
 --------------------------------------------------------------------------------

@@ -26,7 +26,10 @@
 
 ## SavedVariables
 - `ShinkiliDB` (primary). Legacy `BlizzShinDB` is still accepted once at load.
-- Important keys: `mappings`, `overrides`, `defense` (entries + box placement), `procs.entries`, `locale` (`en`/`ko`), minimap fields, main indicator placement.
+- **Account-wide:** `locale`, minimap fields, cast/channel `overrides`.
+- **Per character** (`charProfiles[Name-Realm].placement`): main/defense box size/position/lock/layer, blacklist toggle key.
+- **Per character+spec** (`charProfiles[…].specs[CLASS_N]`): `mappings`, `procs.entries`, `defense.entries` (+ enabled), `blacklist.entries` / `cooldowns` / cooldown-filter `enabled`, `simcAssist`.
+- Migration (`profileSchemaVersion >= 2`): existing data seeds every future spec for that character (lazy clone from `seed` on first visit). `charMappings` kept in sync for compatibility.
 
 ## Runtime model
 - **Main box (best single pick)** — `Logic.pickRecommendation`, four stages:

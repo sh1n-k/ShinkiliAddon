@@ -371,7 +371,8 @@ local applyBlacklistBinding
 local setBlacklistEnabled
 local showBlacklistToast
 local updateSpellState
-
+local getSimcSpecKey
+local rebindProfile
 local function db()
     return ShinkiliDB
 end
@@ -395,7 +396,7 @@ function feature.characterKey()
     return Logic.characterKey(name, realm)
 end
 
---- Bind settings.mappings to the current character's list (after legacy migration).
+--- Bind per-character placement + per-spec lists into the live settings root.
 function feature.bindMappings()
     local settings = db()
     if not settings then
@@ -405,18 +406,51 @@ function feature.bindMappings()
     Logic.migrateLegacyCharMappings(settings, key, settings.legacyMappingsCharacter)
     if key then
         Logic.rehomeNameOnlyCharMappings(settings, key)
-        if settings.pendingMappingsReset then
-            settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
-            settings.charMappings[key] = {}
-            settings.pendingMappingsReset = nil
-        end
-        settings.mappings = Logic.ensureCharMappings(settings, key)
-    elseif type(settings.mappings) ~= "table" then
-        settings.mappings = {}
     end
+    Logic.migrateCharSpecProfiles(settings, key)
+
+    if not key then
+        if type(settings.mappings) ~= "table" then
+            settings.mappings = {}
+        end
+        return
+    end
+
+    local charProfile = Logic.ensureCharProfile(settings, key)
+    if not charProfile then
+        return
+    end
+
+    if settings.pendingMappingsReset then
+        charProfile.seed = Logic.emptySpecProfile()
+        charProfile.specs = {}
+        settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
+        settings.charMappings[key] = {}
+        settings.pendingMappingsReset = nil
+    end
+
+    Logic.applyCharPlacementToSettings(settings, charProfile.placement)
+
+    local specKey = getSimcSpecKey and getSimcSpecKey() or nil
+    if not specKey then
+        -- Spec unknown yet: keep seed lists live so UI is not empty before talent load.
+        Logic.applySpecToSettings(settings, charProfile.seed or Logic.emptySpecProfile())
+        if type(charProfile.seed) == "table" and type(charProfile.seed.mappings) == "table" then
+            settings.mappings = Logic.deepCopy(charProfile.seed.mappings)
+        end
+        settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
+        settings.charMappings[key] = settings.mappings
+        return
+    end
+
+    local spec = Logic.ensureSpecProfile(charProfile, specKey)
+    Logic.applySpecToSettings(settings, spec)
+    -- Keep legacy charMappings pointer in sync for older paths.
+    settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
+    settings.charMappings[key] = settings.mappings
 end
 
---- Write sanitized mappings back into charMappings[characterKey].
+--- Write live settings back into char placement + current spec bucket.
 function feature.persistMappings()
     local settings = db()
     if not settings then
@@ -426,6 +460,24 @@ function feature.persistMappings()
     if not key then
         return
     end
+
+    local charProfile = Logic.ensureCharProfile(settings, key)
+    if not charProfile then
+        return
+    end
+
+    charProfile.placement = Logic.captureCharPlacementFromSettings(settings)
+
+    local specKey = getSimcSpecKey and getSimcSpecKey() or nil
+    if specKey then
+        local captured = Logic.captureSpecFromSettings(settings)
+        charProfile.specs = type(charProfile.specs) == "table" and charProfile.specs or {}
+        charProfile.specs[specKey] = captured
+        if type(charProfile.seed) ~= "table" then
+            charProfile.seed = Logic.deepCopy(captured)
+        end
+    end
+
     settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
     settings.charMappings[key] = type(settings.mappings) == "table" and settings.mappings or {}
 end
@@ -889,7 +941,7 @@ local function getBlacklistSettings()
     return settings.blacklist
 end
 
-local function getSimcSpecKey()
+getSimcSpecKey = function()
     if not UnitClass then
         return nil
     end
@@ -901,7 +953,7 @@ local function getSimcSpecKey()
     if not specIndex or specIndex < 1 then
         return nil
     end
-    return classFile .. "_" .. tostring(specIndex)
+    return Logic.specKey(classFile, specIndex)
 end
 
 --- Live AC triple for position-1:
@@ -2284,8 +2336,14 @@ local function resetToDefaults()
     settings.mappings = {}
     local charKey = feature.characterKey()
     settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
+    settings.charProfiles = type(settings.charProfiles) == "table" and settings.charProfiles or {}
     if charKey then
         settings.charMappings[charKey] = settings.mappings
+        settings.charProfiles[charKey] = {
+            placement = Logic.captureCharPlacementFromSettings(settings),
+            seed = Logic.emptySpecProfile(),
+            specs = {},
+        }
         settings.pendingMappingsReset = nil
     else
         -- Character key not ready yet; bindMappings clears this character on next stable key.
@@ -4449,7 +4507,9 @@ local function initialize()
         enabled = false,
         toggleKey = nil,
         entries = {},
+        cooldowns = {},
     }
+    ShinkiliDB.charProfiles = type(ShinkiliDB.charProfiles) == "table" and ShinkiliDB.charProfiles or {}
     if ShinkiliDB.simcAssist == nil then
         ShinkiliDB.simcAssist = defaults.simcAssist
     end
@@ -4560,14 +4620,40 @@ addon:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     end
 
     if event == "PLAYER_LOGIN" then
-        -- Character name/realm is reliable here; re-bind per-character mappings.
+        -- Character name/realm is reliable here; re-bind per-character/spec profiles.
         sanitizeSettings()
+        applySize()
+        applyPosition()
+        applyDefenseSize()
+        applyDefensePosition()
+        applyFrameLayers()
+        applyBlacklistBinding()
         if state.optionsOpen then
-            updateEditorControls()
-            updateMappingRows()
+            refreshAllEditorViews()
         end
         updateSpellState()
         return
+    end
+
+    if event == "PLAYER_SPECIALIZATION_CHANGED" then
+        -- Persist outgoing spec, then load the incoming bucket (seed clone if new).
+        if arg1 == nil or arg1 == "player" then
+            feature.persistMappings()
+            sanitizeSettings()
+            applySize()
+            applyPosition()
+            applyDefenseSize()
+            applyDefensePosition()
+            applyFrameLayers()
+            applyBlacklistBinding()
+            refreshAvailableSpells()
+            scanTrackedSpells()
+            if state.optionsOpen then
+                refreshAllEditorViews()
+            end
+            updateSpellState()
+        end
+        -- fall through for tracker/cache refresh
     end
 
     -- Action-bar usability is the readable stand-in when C_Spell.IsSpellUsable

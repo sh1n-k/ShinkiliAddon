@@ -303,6 +303,345 @@ function Logic.ensureCharMappings(accountDb, characterKey)
     return accountDb.charMappings[characterKey]
 end
 
+--------------------------------------------------------------------------------
+-- Character + specialization profiles
+--
+-- Account-wide: locale, minimap, cast/channel overrides.
+-- Per character: main/defense box placement, blacklist toggle key.
+-- Per character+spec: mappings, procs, defense entries, exclusion lists, simcAssist.
+-- Migration copies existing data into each character's seed so every spec starts
+-- with the same non-destructive snapshot (lazy clone on first visit).
+--------------------------------------------------------------------------------
+
+function Logic.deepCopy(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for key, child in pairs(value) do
+        copy[key] = Logic.deepCopy(child)
+    end
+    return copy
+end
+
+function Logic.specKey(classFile, specIndex)
+    if type(classFile) ~= "string" or classFile == "" then
+        return nil
+    end
+    local index = tonumber(specIndex)
+    if not index or index < 1 then
+        return nil
+    end
+    return classFile .. "_" .. tostring(math.floor(index + 0.5))
+end
+
+local function emptySpecProfile()
+    return {
+        mappings = {},
+        procs = {entries = {}},
+        defense = {enabled = true, entries = {}},
+        blacklist = {enabled = false, entries = {}, cooldowns = {}},
+        simcAssist = true,
+    }
+end
+
+function Logic.emptySpecProfile()
+    return emptySpecProfile()
+end
+
+--- Snapshot of list data that varies by specialization.
+function Logic.captureSpecFromSettings(settings)
+    settings = type(settings) == "table" and settings or {}
+    local defense = type(settings.defense) == "table" and settings.defense or {}
+    local procs = type(settings.procs) == "table" and settings.procs or {}
+    local blacklist = type(settings.blacklist) == "table" and settings.blacklist or {}
+    return {
+        mappings = Logic.deepCopy(settings.mappings) or {},
+        procs = {entries = Logic.deepCopy(procs.entries) or {}},
+        defense = {
+            enabled = defense.enabled ~= false,
+            entries = Logic.deepCopy(defense.entries) or {},
+        },
+        blacklist = {
+            enabled = blacklist.enabled == true,
+            entries = Logic.deepCopy(blacklist.entries) or {},
+            cooldowns = Logic.deepCopy(blacklist.cooldowns) or {},
+        },
+        simcAssist = settings.simcAssist ~= false,
+    }
+end
+
+--- Snapshot of placement that is shared across a character's specs.
+function Logic.captureCharPlacementFromSettings(settings)
+    settings = type(settings) == "table" and settings or {}
+    local defense = type(settings.defense) == "table" and settings.defense or {}
+    local blacklist = type(settings.blacklist) == "table" and settings.blacklist or {}
+    return {
+        size = settings.size,
+        x = settings.x,
+        y = settings.y,
+        point = settings.point,
+        relativePoint = settings.relativePoint,
+        locked = settings.locked ~= false,
+        showMarker = settings.showMarker ~= false,
+        frameStrata = settings.frameStrata,
+        frameLevel = settings.frameLevel,
+        defense = {
+            size = defense.size,
+            x = defense.x,
+            y = defense.y,
+            point = defense.point,
+            relativePoint = defense.relativePoint,
+            locked = defense.locked ~= false,
+            frameStrata = defense.frameStrata,
+            frameLevel = defense.frameLevel,
+        },
+        blacklistToggleKey = type(blacklist.toggleKey) == "string" and blacklist.toggleKey or nil,
+    }
+end
+
+function Logic.applySpecToSettings(settings, spec)
+    if type(settings) ~= "table" or type(spec) ~= "table" then
+        return settings
+    end
+    settings.mappings = Logic.deepCopy(spec.mappings) or {}
+    settings.procs = type(settings.procs) == "table" and settings.procs or {}
+    settings.procs.entries = Logic.deepCopy(spec.procs and spec.procs.entries) or {}
+    settings.defense = type(settings.defense) == "table" and settings.defense or {}
+    settings.defense.enabled = not (spec.defense and spec.defense.enabled == false)
+    settings.defense.entries = Logic.deepCopy(spec.defense and spec.defense.entries) or {}
+    settings.blacklist = type(settings.blacklist) == "table" and settings.blacklist or {}
+    settings.blacklist.enabled = spec.blacklist and spec.blacklist.enabled == true
+    settings.blacklist.entries = Logic.deepCopy(spec.blacklist and spec.blacklist.entries) or {}
+    settings.blacklist.cooldowns = Logic.deepCopy(spec.blacklist and spec.blacklist.cooldowns) or {}
+    settings.simcAssist = not (spec.simcAssist == false)
+    return settings
+end
+
+function Logic.applyCharPlacementToSettings(settings, placement)
+    if type(settings) ~= "table" or type(placement) ~= "table" then
+        return settings
+    end
+    if placement.size ~= nil then
+        settings.size = placement.size
+    end
+    if placement.x ~= nil then
+        settings.x = placement.x
+    end
+    if placement.y ~= nil then
+        settings.y = placement.y
+    end
+    if placement.point ~= nil then
+        settings.point = placement.point
+    end
+    if placement.relativePoint ~= nil then
+        settings.relativePoint = placement.relativePoint
+    end
+    if placement.locked ~= nil then
+        settings.locked = placement.locked ~= false
+    end
+    if placement.showMarker ~= nil then
+        settings.showMarker = placement.showMarker ~= false
+    end
+    if placement.frameStrata ~= nil then
+        settings.frameStrata = placement.frameStrata
+    end
+    if placement.frameLevel ~= nil then
+        settings.frameLevel = placement.frameLevel
+    end
+    settings.defense = type(settings.defense) == "table" and settings.defense or {}
+    local defPlace = type(placement.defense) == "table" and placement.defense or {}
+    if defPlace.size ~= nil then
+        settings.defense.size = defPlace.size
+    end
+    if defPlace.x ~= nil then
+        settings.defense.x = defPlace.x
+    end
+    if defPlace.y ~= nil then
+        settings.defense.y = defPlace.y
+    end
+    if defPlace.point ~= nil then
+        settings.defense.point = defPlace.point
+    end
+    if defPlace.relativePoint ~= nil then
+        settings.defense.relativePoint = defPlace.relativePoint
+    end
+    if defPlace.locked ~= nil then
+        settings.defense.locked = defPlace.locked ~= false
+    end
+    if defPlace.frameStrata ~= nil then
+        settings.defense.frameStrata = defPlace.frameStrata
+    end
+    if defPlace.frameLevel ~= nil then
+        settings.defense.frameLevel = defPlace.frameLevel
+    end
+    settings.blacklist = type(settings.blacklist) == "table" and settings.blacklist or {}
+    if placement.blacklistToggleKey == nil or placement.blacklistToggleKey == "" then
+        settings.blacklist.toggleKey = nil
+    else
+        settings.blacklist.toggleKey = placement.blacklistToggleKey
+    end
+    return settings
+end
+
+local function seedFromAccountRoot(accountDb, mappings)
+    accountDb = type(accountDb) == "table" and accountDb or {}
+    local defense = type(accountDb.defense) == "table" and accountDb.defense or {}
+    local procs = type(accountDb.procs) == "table" and accountDb.procs or {}
+    local blacklist = type(accountDb.blacklist) == "table" and accountDb.blacklist or {}
+    return {
+        mappings = Logic.deepCopy(mappings) or {},
+        procs = {entries = Logic.deepCopy(procs.entries) or {}},
+        defense = {
+            enabled = defense.enabled ~= false,
+            entries = Logic.deepCopy(defense.entries) or {},
+        },
+        blacklist = {
+            enabled = blacklist.enabled == true,
+            entries = Logic.deepCopy(blacklist.entries) or {},
+            cooldowns = Logic.deepCopy(blacklist.cooldowns) or {},
+        },
+        simcAssist = accountDb.simcAssist ~= false,
+    }
+end
+
+--- One-time migration to charProfiles. Existing data seeds every future spec.
+function Logic.migrateCharSpecProfiles(accountDb, currentCharacterKey)
+    if type(accountDb) ~= "table" then
+        return
+    end
+    if tonumber(accountDb.profileSchemaVersion) and tonumber(accountDb.profileSchemaVersion) >= 2 then
+        return
+    end
+
+    accountDb.charProfiles = type(accountDb.charProfiles) == "table" and accountDb.charProfiles or {}
+    local placement = Logic.captureCharPlacementFromSettings(accountDb)
+
+    local charKeys = {}
+    if type(accountDb.charMappings) == "table" then
+        for key in pairs(accountDb.charMappings) do
+            if type(key) == "string" and key ~= "" then
+                charKeys[key] = true
+            end
+        end
+    end
+    if type(currentCharacterKey) == "string" and currentCharacterKey ~= "" then
+        charKeys[currentCharacterKey] = true
+    end
+
+    if not next(charKeys) then
+        accountDb._pendingProfileSeed = seedFromAccountRoot(
+            accountDb,
+            mappingListHasEntries(accountDb.mappings) and accountDb.mappings or {}
+        )
+        accountDb._pendingPlacement = Logic.deepCopy(placement)
+        accountDb.profileSchemaVersion = 2
+        return
+    end
+
+    for charKey in pairs(charKeys) do
+        if type(accountDb.charProfiles[charKey]) ~= "table" then
+            local maps = nil
+            if type(accountDb.charMappings) == "table" and mappingListHasEntries(accountDb.charMappings[charKey]) then
+                maps = accountDb.charMappings[charKey]
+            elseif charKey == currentCharacterKey and mappingListHasEntries(accountDb.mappings) then
+                maps = accountDb.mappings
+            end
+            accountDb.charProfiles[charKey] = {
+                placement = Logic.deepCopy(placement),
+                seed = seedFromAccountRoot(accountDb, maps or {}),
+                specs = {},
+            }
+        end
+    end
+
+    accountDb.profileSchemaVersion = 2
+end
+
+function Logic.ensureCharProfile(accountDb, characterKey)
+    if type(accountDb) ~= "table" or type(characterKey) ~= "string" or characterKey == "" then
+        return nil
+    end
+    accountDb.charProfiles = type(accountDb.charProfiles) == "table" and accountDb.charProfiles or {}
+    local profile = accountDb.charProfiles[characterKey]
+    if type(profile) ~= "table" then
+        local maps = nil
+        if type(accountDb.charMappings) == "table" and mappingListHasEntries(accountDb.charMappings[characterKey]) then
+            maps = accountDb.charMappings[characterKey]
+        end
+        local seed = accountDb._pendingProfileSeed
+        if type(seed) ~= "table" then
+            seed = seedFromAccountRoot(accountDb, maps or {})
+        elseif maps then
+            seed = Logic.deepCopy(seed)
+            seed.mappings = Logic.deepCopy(maps)
+        else
+            seed = Logic.deepCopy(seed)
+        end
+        local placement = accountDb._pendingPlacement
+        if type(placement) ~= "table" then
+            placement = Logic.captureCharPlacementFromSettings(accountDb)
+        else
+            placement = Logic.deepCopy(placement)
+        end
+        profile = {
+            placement = placement,
+            seed = seed,
+            specs = {},
+        }
+        accountDb.charProfiles[characterKey] = profile
+    end
+    profile.specs = type(profile.specs) == "table" and profile.specs or {}
+    if type(profile.seed) ~= "table" then
+        profile.seed = emptySpecProfile()
+    end
+    if type(profile.placement) ~= "table" then
+        profile.placement = Logic.captureCharPlacementFromSettings(accountDb)
+    end
+    return profile
+end
+
+--- Returns the spec bucket, cloning the character seed on first visit.
+function Logic.ensureSpecProfile(charProfile, specKey)
+    if type(charProfile) ~= "table" or type(specKey) ~= "string" or specKey == "" then
+        return emptySpecProfile()
+    end
+    charProfile.specs = type(charProfile.specs) == "table" and charProfile.specs or {}
+    if type(charProfile.specs[specKey]) ~= "table" then
+        local seed = type(charProfile.seed) == "table" and charProfile.seed or emptySpecProfile()
+        charProfile.specs[specKey] = Logic.deepCopy(seed)
+    end
+    local spec = charProfile.specs[specKey]
+    if type(spec.mappings) ~= "table" then
+        spec.mappings = {}
+    end
+    if type(spec.procs) ~= "table" then
+        spec.procs = {entries = {}}
+    end
+    if type(spec.procs.entries) ~= "table" then
+        spec.procs.entries = {}
+    end
+    if type(spec.defense) ~= "table" then
+        spec.defense = {enabled = true, entries = {}}
+    end
+    if type(spec.defense.entries) ~= "table" then
+        spec.defense.entries = {}
+    end
+    if type(spec.blacklist) ~= "table" then
+        spec.blacklist = {enabled = false, entries = {}, cooldowns = {}}
+    end
+    if type(spec.blacklist.entries) ~= "table" then
+        spec.blacklist.entries = {}
+    end
+    if type(spec.blacklist.cooldowns) ~= "table" then
+        spec.blacklist.cooldowns = {}
+    end
+    if spec.simcAssist == nil then
+        spec.simcAssist = true
+    end
+    return spec
+end
+
 --- Sanitize saved settings in place (mappings, overrides, defense/procs, locale, placement).
 function Logic.sanitizeSettings(settings, config)
     settings.size = Logic.clamp(tonumber(settings.size) or config.sizeDefault, 24, 300)
