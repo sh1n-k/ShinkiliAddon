@@ -5,6 +5,7 @@ local root = arg[0]:match("(.*/)")
 package.path = root .. "../Shinkili/?.lua;" .. package.path
 
 dofile(root .. "../Shinkili/ShinkiliLogic.lua")
+dofile(root .. "../Shinkili/ShinkiliLocale.lua")
 local Logic = ShinkiliLogic
 
 local failures = 0
@@ -172,192 +173,242 @@ check("blacklist disabled kept", bl[2].enabled == false)
 check("blacklist filter off ignores", Logic.isSpellBlacklisted(bl, 7, false) == false)
 check("blacklist enabled hits", Logic.isSpellBlacklisted(bl, 7, true) == true)
 check("blacklist disabled entry skipped", Logic.isSpellBlacklisted(bl, 8, true) == false)
--- 8 is present but entry.enabled=false → not filtered; chosen over 9
-check("pick recommended skips blacklisted", Logic.pickRecommendedSpell(7, {8, 9}, bl, true) == 8)
-check("pick recommended when filter off", Logic.pickRecommendedSpell(7, {9}, bl, false) == 7)
-check("pick all blacklisted yields nil", Logic.pickRecommendedSpell(7, {7, 9}, bl, true) == nil)
+--------------------------------------------------------------------------------
+-- pickRecommendation
+--
+-- The invariant every case below is protecting: SimC only wins when the host
+-- could prove BOTH the gates and that the spell is castable right now. Anything
+-- unknown must fall back to Blizzard's Assisted Combat pick.
+--------------------------------------------------------------------------------
+
+local READY = "ready"
+
+-- castability stub: everything ready unless listed.
+local function castabilityFrom(overrides)
+    return function(spellId)
+        return (overrides and overrides[spellId]) or READY
+    end
+end
+
+-- gate stub: verdict per spell id, default "pass".
+local function gatesFrom(verdicts)
+    return function(entry)
+        local id = type(entry) == "table" and entry.id or entry
+        return (verdicts and verdicts[id]) or "pass"
+    end
+end
 
 local simcEntries = {
     {id = 100},
-    {id = 200, gates = {{t = "proc"}}},
+    {id = 200},
     {id = 300},
 }
-local function gateOk(entry)
-    if type(entry.gates) ~= "table" then
-        return true
-    end
-    for _, g in ipairs(entry.gates) do
-        if g.t == "proc" then
-            return false
-        end
-    end
-    return true
-end
 
-local id, reason = Logic.pickBestRecommendation(50, {300}, simcEntries, {
+local id, reason
+
+-- Assist-only mode never consults SimC.
+id, reason = Logic.pickRecommendation(50, 60, {300}, simcEntries, {
     simcAssist = false,
-    blacklistEnabled = false,
-    gateOk = gateOk,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
 })
-check("assist mode AC primary", id == 50 and reason == "ac_primary")
+check("assist mode keeps AC primary", id == 50 and reason == "ac_primary")
 
-id, reason = Logic.pickBestRecommendation(50, {300}, simcEntries, {
+-- SimC entry in the pool, gates proven, castable -> it overrides AC.
+id, reason = Logic.pickRecommendation(50, 60, {300}, simcEntries, {
     simcAssist = true,
-    blacklistEnabled = false,
-    gateOk = gateOk,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
 })
--- 300 is in SimC list and in AC pool → ranks above bare primary 50
-check("simc mode ranks AC pool by SimC", id == 300 and reason == "simc_rank")
+check("verified SimC entry overrides AC", id == 300 and reason == "simc_verified")
 
-id, reason = Logic.pickBestRecommendation(50, {}, {{id = 100}}, {
+-- Unknown gates (delegated, unreadable buff, ...) must NOT override.
+id, reason = Logic.pickRecommendation(50, 60, {300}, simcEntries, {
     simcAssist = true,
-    blacklistEnabled = false,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom({[300] = "unknown"}),
 })
-check("simc mode keeps sole AC candidate", id == 50 and reason == "ac_primary")
+check("unknown gates defer to AC", id == 50 and reason == "ac_primary")
 
-id, reason = Logic.pickBestRecommendation(100, {300}, simcEntries, {
+-- Failed gates must not override either.
+id, reason = Logic.pickRecommendation(50, 60, {300}, simcEntries, {
     simcAssist = true,
-    blacklistEnabled = true,
-    blacklistEntries = {{spellId = 100, enabled = true}},
-    gateOk = gateOk,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom({[300] = "fail"}),
 })
-check("blacklist drops primary then SimC", id == 300 and reason == "simc_rank")
+check("failed gates defer to AC", id == 50 and reason == "ac_primary")
 
-id, reason = Logic.pickBestRecommendation(nil, {}, simcEntries, {
+-- Gates pass but the spell is not castable right now: no override.
+id, reason = Logic.pickRecommendation(50, 60, {300}, simcEntries, {
     simcAssist = true,
-    blacklistEnabled = false,
-    gateOk = gateOk,
+    castability = castabilityFrom({[300] = "no_resource"}),
+    gateVerdict = gatesFrom(),
 })
--- pool empty without AC → none (SimC alone does not invent outside AC pool)
+check("resource-starved SimC entry defers to AC", id == 50 and reason == "ac_primary")
+
+-- Unknown castability is not "ready", so it cannot win a SimC override.
+id, reason = Logic.pickRecommendation(50, 60, {300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom({[300] = "unknown"}),
+    gateVerdict = gatesFrom(),
+})
+check("unknown castability blocks SimC override", id == 50 and reason == "ac_primary")
+
+-- SimC priority order decides which verified entry wins.
+id, reason = Logic.pickRecommendation(50, 60, {100, 300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
+})
+check("highest verified SimC entry wins", id == 100 and reason == "simc_verified")
+
+-- ...and a blocked higher entry hands off to the next verified one.
+id, reason = Logic.pickRecommendation(50, 60, {100, 300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom({[100] = "on_cd"}),
+    gateVerdict = gatesFrom(),
+})
+check("blocked SimC head falls to next verified", id == 300 and reason == "simc_verified")
+
+-- SimC agreeing with Blizzard reports the simpler reason.
+id, reason = Logic.pickRecommendation(100, 60, {300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
+})
+check("SimC agreeing with AC reports ac_primary", id == 100 and reason == "ac_primary")
+
+-- SimC never invents a spell outside the live AC pool.
+id, reason = Logic.pickRecommendation(nil, nil, {}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
+})
 check("no AC pool yields none", id == nil and reason == "none")
 
-id, reason = Logic.pickBestRecommendation(200, {100, 300}, simcEntries, {
+id, reason = Logic.pickRecommendation(50, 60, {}, simcEntries, {
     simcAssist = true,
-    blacklistEnabled = false,
-    gateOk = gateOk,
-    isUsable = function(spellId)
-        return spellId ~= 100
-    end,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
 })
-check("prefer usable over higher simc unusable", id == 300)
+check("SimC entries outside the pool are skipped", id == 50 and reason == "ac_primary")
 
--- gate skips 200; pool is empty of AC so none unless we pass candidates
-id, reason = Logic.pickBestRecommendation(200, {100}, simcEntries, {
-    simcAssist = true,
-    blacklistEnabled = false,
-    gateOk = gateOk,
-})
-check("gate skips proc-gated id in simc pass", id == 100 and reason == "simc_rank")
+--------------------------------------------------------------------------------
+-- Hard castability filter
+--------------------------------------------------------------------------------
 
--- Position-1 core API (primary / lookahead / rotation explicit)
-id, reason = Logic.pickPosition1Recommendation(10, 20, {30, 40}, nil, {
+id, reason = Logic.pickRecommendation(50, 60, {70}, nil, {
     simcAssist = false,
-    blacklistEnabled = false,
+    castability = castabilityFrom({[50] = "on_cd"}),
 })
-check("p1 primary wins", id == 10 and reason == "ac_primary")
+check("uncastable primary hands off to lookahead", id == 60 and reason == "ac_lookahead")
 
-id, reason = Logic.pickPosition1Recommendation(10, 20, {30}, nil, {
+id, reason = Logic.pickRecommendation(50, 60, {70}, nil, {
+    simcAssist = false,
+    castability = castabilityFrom({[50] = "unusable", [60] = "out_of_range"}),
+})
+check("uncastable primary and lookahead fall to rotation", id == 70 and reason == "ac_candidate")
+
+-- Resource starvation is transient and must never remove a spell.
+id, reason = Logic.pickRecommendation(50, 60, {70}, nil, {
+    simcAssist = false,
+    castability = castabilityFrom({[50] = "no_resource"}),
+})
+check("resource starvation keeps the AC primary", id == 50 and reason == "ac_primary")
+
+-- Everything unreadable: keep showing Blizzard's pick rather than blanking.
+id, reason = Logic.pickRecommendation(50, 60, {70}, nil, {
+    simcAssist = false,
+    castability = castabilityFrom({[50] = "unknown", [60] = "unknown", [70] = "unknown"}),
+})
+check("unknown castability keeps the AC primary", id == 50 and reason == "ac_primary")
+
+-- Everything provably uncastable: still show AC rather than an empty box.
+id, reason = Logic.pickRecommendation(50, 60, {70}, nil, {
+    simcAssist = false,
+    castability = castabilityFrom({[50] = "on_cd", [60] = "on_cd", [70] = "on_cd"}),
+})
+check("all-blocked pool still shows AC primary", id == 50 and reason == "ac_primary")
+
+--------------------------------------------------------------------------------
+-- Blacklist, suppression and display ids
+--------------------------------------------------------------------------------
+
+id, reason = Logic.pickRecommendation(10, 20, {30}, nil, {
     simcAssist = false,
     blacklistEnabled = true,
     blacklistEntries = {{spellId = 10, enabled = true}},
+    castability = castabilityFrom(),
 })
-check("p1 blacklist uses lookahead", id == 20 and reason == "ac_lookahead")
+check("blacklisted primary uses lookahead", id == 20 and reason == "ac_lookahead")
 
-id, reason = Logic.pickPosition1Recommendation(10, 20, {30, 40}, nil, {
-    simcAssist = false,
-    blacklistEnabled = true,
-    blacklistEntries = {
-        {spellId = 10, enabled = true},
-        {spellId = 20, enabled = true},
-    },
-})
-check("p1 rotation after primary+lookahead blocked", id == 30 and reason == "ac_candidate")
-
-id, reason = Logic.pickPosition1Recommendation(10, 20, {30, 300}, simcEntries, {
-    simcAssist = true,
-    blacklistEnabled = false,
-    gateOk = gateOk,
-})
--- pool {10,20,30,300}; SimC order 100(out),200(gate fail),300 → 300 ranks first among pool
-check("p1 simc ranks within pool", id == 300 and reason == "simc_rank")
-
-id, reason = Logic.pickPosition1Recommendation(9001, 20, {30}, nil, {
+id, reason = Logic.pickRecommendation(9001, 20, {30}, nil, {
     simcAssist = false,
     blacklistEnabled = true,
     blacklistEntries = {{spellId = 9999, enabled = true}},
     displayOf = function(spellId)
-        if spellId == 9001 then
-            return 9999
-        end
-        return spellId
+        return spellId == 9001 and 9999 or spellId
     end,
+    castability = castabilityFrom(),
 })
-check("p1 blacklist matches display id", id == 20 and reason == "ac_lookahead")
+check("blacklist matches the display id", id == 20 and reason == "ac_lookahead")
 
--- BL stores book base; AC supplies override id → still blocked via displayOf(entry)
-id, reason = Logic.pickPosition1Recommendation(9001, 20, {30}, nil, {
+id, reason = Logic.pickRecommendation(9001, 20, {30}, nil, {
     simcAssist = false,
     blacklistEnabled = true,
     blacklistEntries = {{spellId = 8000, enabled = true}},
     displayOf = function(spellId)
-        if spellId == 8000 or spellId == 9001 then
-            return 9001
+        return (spellId == 8000 or spellId == 9001) and 9001 or spellId
+    end,
+    castability = castabilityFrom(),
+})
+check("blacklist entry resolves through displayOf", id == 20 and reason == "ac_lookahead")
+
+-- The pool is keyed by display id, so a base id must not shadow a candidate
+-- that merely happens to display as that base id.
+local collapseDetail
+id, reason, collapseDetail = Logic.pickRecommendation(400, 500, {600}, nil, {
+    simcAssist = false,
+    displayOf = function(spellId)
+        if spellId == 400 then
+            return 500
         end
         return spellId
     end,
+    castability = castabilityFrom(),
+    collectDetail = true,
 })
-check("p1 blacklist reverse displayOf entry", id == 20 and reason == "ac_lookahead")
+check("primary and lookahead sharing a display id collapse",
+    id == 500 and reason == "ac_primary" and collapseDetail.poolSize == 2)
 
-id, reason = Logic.pickPosition1Recommendation(10, 20, {30}, nil, {
+--------------------------------------------------------------------------------
+-- Diagnostics
+--------------------------------------------------------------------------------
+
+local detail
+id, reason, detail = Logic.pickRecommendation(50, 60, {300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom({[300] = "on_cd"}),
+    gateVerdict = gatesFrom(),
+    collectDetail = true,
+})
+check("detail reports pool size", detail ~= nil and detail.poolSize == 3)
+check("detail reports castable size", detail ~= nil and detail.castableSize == 2)
+check("detail records the blocked entry", (function()
+    if not detail then
+        return false
+    end
+    for _, row in ipairs(detail.pool) do
+        if row.id == 300 and row.castability == "on_cd" then
+            return true
+        end
+    end
+    return false
+end)())
+check("detail omitted unless requested", select(3, Logic.pickRecommendation(50, 60, {}, nil, {
     simcAssist = false,
-    blacklistEnabled = false,
-    suppressPick = function(spellId)
-        return spellId == 10
-    end,
-})
-check("p1 suppress primary uses lookahead", id == 20 and reason == "ac_lookahead")
-
-id, reason = Logic.pickPosition1Recommendation(10, 20, {30, 100, 300}, simcEntries, {
-    simcAssist = true,
-    blacklistEnabled = false,
-    gateOk = gateOk,
-    isUsable = function(spellId)
-        return spellId ~= 100
-    end,
-})
--- SimC among pool: 100 then 300; 100 unusable → 300
-check("p1 simc soft skip unusable", id == 300 and reason == "simc_rank")
-
--- All unusable → soft fallback to ranked head (do not empty)
-id, reason = Logic.pickPosition1Recommendation(10, 20, {100}, simcEntries, {
-    simcAssist = true,
-    blacklistEnabled = false,
-    gateOk = gateOk,
-    isUsable = function()
-        return false
-    end,
-})
-check("p1 all unusable soft keeps head", id == 100 and reason == "simc_rank")
-
--- simcAssist on but empty entries → pure AC (no soft usable demotion path needed)
-id, reason = Logic.pickPosition1Recommendation(10, 20, {30}, {}, {
-    simcAssist = true,
-    blacklistEnabled = false,
-    isUsable = function()
-        return false
-    end,
-})
-check("p1 empty simc stays AC primary", id == 10 and reason == "ac_primary")
-
--- No SimC pool overlap → ignore isUsable demotion of AC primary
-id, reason = Logic.pickPosition1Recommendation(10, 20, {30}, {{id = 999}}, {
-    simcAssist = true,
-    blacklistEnabled = false,
-    isUsable = function(spellId)
-        return spellId ~= 10
-    end,
-})
-check("p1 no simc hit skips usable demote", id == 10 and reason == "ac_primary")
+    castability = castabilityFrom(),
+})) == nil)
 
 check("blacklist nil filter is off", Logic.isSpellBlacklisted(bl, 7, nil) == false)
 
@@ -372,6 +423,26 @@ local fakeData = {
 check("simc spec table", Logic.getSimcSpecTable(fakeData, "TEST_1") ~= nil)
 check("simc context st", Logic.getSimcContextEntries(fakeData.specs.TEST_1, false)[1].id == 1)
 check("simc context aoe", Logic.getSimcContextEntries(fakeData.specs.TEST_1, true)[1].id == 9)
+
+--------------------------------------------------------------------------------
+-- Locale parity: a reason or command string that exists in one language and not
+-- the other shows up as a raw key in the UI.
+--------------------------------------------------------------------------------
+
+local en = ShinkiliLocale.locales.en
+local ko = ShinkiliLocale.locales.ko
+local localeGaps = {}
+for key in pairs(en) do
+    if ko[key] == nil then
+        localeGaps[#localeGaps + 1] = "ko:" .. key
+    end
+end
+for key in pairs(ko) do
+    if en[key] == nil then
+        localeGaps[#localeGaps + 1] = "en:" .. key
+    end
+end
+check("locale keys match across en/ko", #localeGaps == 0, table.concat(localeGaps, ", "))
 
 if failures > 0 then
     print(string.format("%d failure(s)", failures))

@@ -8,5 +8,8 @@
 
 ShinkiliLocale.lua
 ShinkiliLogic.lua
+ShinkiliSecret.lua
+ShinkiliTrack.lua
+ShinkiliEval.lua
 ShinkiliSimcData.lua
 Shinkili.lua

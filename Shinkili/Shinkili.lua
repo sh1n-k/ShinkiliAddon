@@ -22,6 +22,8 @@ local FRAME_STRATA_LIST = {
 
 local Logic = ShinkiliLogic
 local Locale = ShinkiliLocale
+local Secret = ShinkiliSecret
+local Eval = ShinkiliEval
 
 local defaults = {
     locale = "en",
@@ -497,21 +499,6 @@ local function refreshAvailableSpells()
     state.availableSpells = available
 end
 
---- Display / transform spell id (JustAC GetDisplaySpellID). Forward-used by mapping lookup.
-local function getDisplaySpellId(spellId)
-    spellId = tonumber(spellId)
-    if not spellId or spellId <= 0 then
-        return spellId
-    end
-    if C_Spell and C_Spell.GetOverrideSpell then
-        local ok, override = pcall(C_Spell.GetOverrideSpell, spellId)
-        if ok and type(override) == "number" and override > 0 then
-            return override
-        end
-    end
-    return spellId
-end
-
 --- Match mapping by base id or display/override id (KeySim colors stay bound to book ids).
 local function findMappingIndexBySpell(spellId)
     spellId = tonumber(spellId)
@@ -519,14 +506,14 @@ local function findMappingIndexBySpell(spellId)
         return nil
     end
 
-    local displayId = getDisplaySpellId(spellId)
+    local displayId = Eval.getDisplaySpellId(spellId)
     for index, mapping in ipairs(db().mappings) do
         local mid = tonumber(mapping.spellId)
         if mid then
             if mid == spellId or mid == displayId then
                 return index
             end
-            local mdisp = getDisplaySpellId(mid)
+            local mdisp = Eval.getDisplaySpellId(mid)
             if mdisp == spellId or mdisp == displayId then
                 return index
             end
@@ -662,61 +649,7 @@ local function togglePreview(spellId, colorIndex, markerIndex, moveGlow)
     end
 end
 
-local function isSpellUsableNow(spellId)
-    if not spellId then
-        return false
-    end
-
-    if C_Spell and C_Spell.IsSpellUsable then
-        local ok, usable = pcall(C_Spell.IsSpellUsable, spellId)
-        if ok then
-            -- Non-boolean (e.g. combat secret) → unusable for defense fail-closed.
-            if type(usable) ~= "boolean" then
-                return false
-            end
-            return usable
-        end
-    end
-
-    if IsUsableSpell then
-        local ok, usable = pcall(IsUsableSpell, spellId)
-        if ok then
-            if type(usable) ~= "boolean" then
-                return false
-            end
-            return usable
-        end
-    end
-
-    return false
-end
-
 local getSpellCooldownInfo
-local isSpellOnCooldown
-local isSpellReadyNow
-local isSpellReadyForRankPrefer
-
-local function isProcActive(spellId)
-    if not spellId then
-        return false
-    end
-
-    if IsSpellOverlayed then
-        local ok, active = pcall(IsSpellOverlayed, spellId)
-        if ok and active then
-            return true
-        end
-    end
-
-    if C_SpellActivationOverlay and C_SpellActivationOverlay.IsSpellOverlayed then
-        local ok, active = pcall(C_SpellActivationOverlay.IsSpellOverlayed, spellId)
-        if ok and active then
-            return true
-        end
-    end
-
-    return false
-end
 
 local function pickActivePriorityEntry(entries, isActive)
     if type(entries) ~= "table" then
@@ -733,8 +666,16 @@ local function pickActivePriorityEntry(entries, isActive)
     return Logic.pickPriorityEntry(entries, activeSet)
 end
 
+--- A proc overlay means the game is highlighting the spell, but it can still be
+--- out of range or on cooldown. Filter those, but NOT `no_resource`: this is a
+--- main-box path and resource starvation refills every GCD, so excluding on it
+--- would make the colour blink off and on at 20Hz.
+local function isProcUsable(spellId)
+    return Eval.isProcActive(spellId) and Eval.isPickable(spellId)
+end
+
 local function getActiveProcEntry()
-    return pickActivePriorityEntry(db().procs and db().procs.entries, isProcActive)
+    return pickActivePriorityEntry(db().procs and db().procs.entries, isProcUsable)
 end
 
 local function getActiveDefenseEntry()
@@ -742,7 +683,7 @@ local function getActiveDefenseEntry()
     if not defense or defense.enabled == false then
         return nil
     end
-    return pickActivePriorityEntry(defense.entries, isSpellUsableNow)
+    return pickActivePriorityEntry(defense.entries, Eval.isUsableForDisplay)
 end
 
 local function getDisplayedSpellId()
@@ -811,65 +752,6 @@ local function getSimcSpecKey()
     return classFile .. "_" .. tostring(specIndex)
 end
 
-local function estimateHostileNameplateCount()
-    local count = 0
-    if C_NamePlate and C_NamePlate.GetNamePlates then
-        local plates = C_NamePlate.GetNamePlates()
-        if type(plates) == "table" then
-            for _, plate in ipairs(plates) do
-                local unit = plate and plate.namePlateUnitToken
-                if unit and UnitCanAttack and UnitCanAttack("player", unit) then
-                    local dead = UnitIsDead and UnitIsDead(unit)
-                    if not dead then
-                        count = count + 1
-                    end
-                end
-            end
-        end
-    end
-    if count == 0 and UnitExists and UnitExists("target") and UnitCanAttack and UnitCanAttack("player", "target") then
-        if not (UnitIsDead and UnitIsDead("target")) then
-            count = 1
-        end
-    end
-    return count
-end
-
-local function evaluateSimcEntryGates(entry)
-    if type(entry) ~= "table" then
-        return true
-    end
-    local gates = entry.gates
-    if type(gates) ~= "table" or #gates == 0 then
-        return true
-    end
-
-    for _, gate in ipairs(gates) do
-        if type(gate) == "table" and gate.t then
-            local gateType = gate.t
-            if gateType == "proc" then
-                if not isProcActive(entry.id) then
-                    return false
-                end
-            elseif gateType == "cd" then
-                -- CD gate: require ready (usable + not on long cooldown).
-                if not isSpellReadyNow(entry.id) then
-                    return false
-                end
-            elseif gateType == "buff" and gate.id then
-                -- Best-effort overlay proxy (secret-safe). Positive buff: fail-open if unknown.
-                -- Negative buff: only block when overlay proves the buff-like state is active.
-                local active = isProcActive(gate.id)
-                if gate.neg and active then
-                    return false
-                end
-            end
-            -- execute / targets / dot / unknown → fail-open
-        end
-    end
-    return true
-end
-
 --- Live AC triple for position-1:
 ---   primary  = GetNextCastSpell(false) include hidden (KeySim: full AC pick)
 ---   lookahead = GetNextCastSpell(true) highlight / visible-bar only (JustAC GetHighlightCastSpell)
@@ -909,45 +791,145 @@ local function collectAcPositionInputs()
     return primary, lookahead, rotation
 end
 
-local function getCurrentRecommendedSpellId()
+--- SimC priority entries for the current spec and target count, plus the labels
+--- /sk why prints. nil when rank mode is off or the spec has no bundled data.
+local function getSimcContextForPick(simcAssist)
+    if not simcAssist or not ShinkiliSimcData then
+        return nil, nil, nil
+    end
+    local specKey = getSimcSpecKey()
+    local specTable = Logic.getSimcSpecTable(ShinkiliSimcData, specKey)
+    local useAoe = Eval.countHostileNameplates() >= 3
+    return Logic.getSimcContextEntries(specTable, useAoe), specKey, useAoe and "aoe" or "st"
+end
+
+--- collectDetail is only set by /sk why: the diagnostic table allocates, and
+--- this runs 20 times a second.
+--- Shared by the pick and by /sk why so the report can never claim a spell the
+--- box is not showing.
+local function isAssistedCombatAvailable()
+    if not C_AssistedCombat or not C_AssistedCombat.IsAvailable or not C_AssistedCombat.GetNextCastSpell then
+        return false
+    end
+    local ok, available = pcall(C_AssistedCombat.IsAvailable)
+    return ok and Secret.plainBool(available) == true
+end
+
+local function getCurrentRecommendedSpellId(collectDetail)
     state.recommendReason = nil
 
-    if not C_AssistedCombat or not C_AssistedCombat.IsAvailable or not C_AssistedCombat.GetNextCastSpell then
-        return nil
-    end
-    local okAvail, available = pcall(C_AssistedCombat.IsAvailable)
-    if not okAvail or not available then
+    if not isAssistedCombatAvailable() then
         return nil
     end
 
     local primary, lookahead, rotation = collectAcPositionInputs()
 
+    -- Blizzard never recommends an uncastable spell, so its pick is a readiness
+    -- oracle: it expires any stale local cooldown/charge entry we are holding
+    -- (proc-driven resets and refunds fire no cast event).
+    if ShinkiliTrack then
+        -- Not ipairs over a literal: a nil primary would silently skip the
+        -- lookahead, and the oracle is what un-sticks a stale cooldown entry.
+        local function noteOracle(picked)
+            if not picked then
+                return
+            end
+            ShinkiliTrack.noteSpellRecommended(picked)
+            local pickedDisplay = Eval.getDisplaySpellId(picked)
+            if pickedDisplay ~= picked then
+                ShinkiliTrack.noteSpellRecommended(pickedDisplay)
+            end
+        end
+        noteOracle(primary)
+        noteOracle(lookahead)
+    end
+
     local blacklist = getBlacklistSettings()
     local simcAssist = db().simcAssist ~= false
 
-    local simcEntries = nil
-    if simcAssist and ShinkiliSimcData then
-        local specKey = getSimcSpecKey()
-        local specTable = Logic.getSimcSpecTable(ShinkiliSimcData, specKey)
-        local useAoe = estimateHostileNameplateCount() >= 3
-        simcEntries = Logic.getSimcContextEntries(specTable, useAoe)
-    end
+    local simcEntries = getSimcContextForPick(simcAssist)
 
-    -- JustAC position-1 core + optional in-pool SimC rank for single-box KeySim pick.
-    local spellId, reason = Logic.pickPosition1Recommendation(primary, lookahead, rotation, simcEntries, {
+    local spellId, reason, detail = Logic.pickRecommendation(primary, lookahead, rotation, simcEntries, {
         blacklistEntries = blacklist.entries,
         blacklistEnabled = blacklist.enabled == true,
         simcAssist = simcAssist,
-        gateOk = evaluateSimcEntryGates,
-        displayOf = getDisplaySpellId,
-        -- Soft prefer ready only when SimC list present; Logic applies only on real pool hits.
-        -- Fail-open when usable/CD unreadable so secret values do not demote AC primary.
-        isUsable = (simcAssist and simcEntries and #simcEntries > 0) and function(id)
-            return isSpellReadyForRankPrefer(id)
-        end or nil,
+        displayOf = Eval.getDisplaySpellId,
+        castability = Eval.getCastability,
+        gateVerdict = Eval.evaluateEntry,
+        collectDetail = collectDetail == true,
     })
     state.recommendReason = reason
-    return spellId
+    return spellId, detail
+end
+
+--- Pre-cache base cooldowns and charge specs for everything the pick may weigh.
+--- Out of combat only: GetSpellBaseCooldown returns secrets in combat.
+local SIMC_CONTEXTS = {"st", "aoe"}
+
+local function addDotWatch(dotIds, dotId)
+    if not dotId then
+        return
+    end
+    dotIds[#dotIds + 1] = dotId
+    local dotDisplay = Eval.getDisplaySpellId(dotId)
+    if dotDisplay ~= dotId then
+        dotIds[#dotIds + 1] = dotDisplay
+    end
+end
+
+local function scanTrackedSpells()
+    if not ShinkiliTrack then
+        return
+    end
+
+    local _, _, rotation = collectAcPositionInputs()
+    if rotation then
+        ShinkiliTrack.scanSpells(rotation)
+    end
+
+    local dotIds = {}
+    local specTable = ShinkiliSimcData and Logic.getSimcSpecTable(ShinkiliSimcData, getSimcSpecKey())
+    if type(specTable) == "table" then
+        for _, context in ipairs(SIMC_CONTEXTS) do
+            local entries = specTable[context]
+            if type(entries) == "table" then
+                local ids = {}
+                for index = 1, #entries do
+                    local entry = entries[index]
+                    local entryId = type(entry) == "table" and entry.id or entry
+                    ids[#ids + 1] = entryId
+
+                    -- ONLY ids the spec gates a DoT on. Adding every entry id
+                    -- here looks tempting (it would let the self-redundancy guard
+                    -- see a gateless DoT) but it makes the tracker treat every
+                    -- rotation cast as a DoT application: the 30s post-cast
+                    -- window then reports a plain filler as "live", and the FIFO
+                    -- aura bridge lets that filler steal a real DoT's instance.
+                    if type(entry) == "table" and type(entry.gates) == "table" then
+                        for _, gate in ipairs(entry.gates) do
+                            if type(gate) == "table" and gate.t == "dot" then
+                                addDotWatch(dotIds, gate.id or entryId)
+                            end
+                        end
+                    end
+                end
+                ShinkiliTrack.scanSpells(ids)
+            end
+        end
+    end
+    -- Before the spec is known there is nothing to configure; saying "this spec
+    -- has no DoTs" would be a claim we cannot make yet.
+    ShinkiliTrack.setDotWatchList(specTable and dotIds or nil)
+
+    local settings = db()
+    local defense = settings and settings.defense
+    if defense and type(defense.entries) == "table" then
+        local ids = {}
+        for _, entry in ipairs(defense.entries) do
+            ids[#ids + 1] = entry.spellId
+        end
+        ShinkiliTrack.scanSpells(ids)
+    end
 end
 
 local function getCurrentCastState()
@@ -988,89 +970,26 @@ getSpellCooldownInfo = function(spellId)
         return nil
     end
 
+    -- `x or 0` is a truthiness branch, and in 12.0 these fields can be secret.
+    -- Everything numeric goes through plainNumber first; nil is preserved so the
+    -- caller can tell "unreadable" from a real zero.
     if GetSpellCooldown then
-        local startTime, duration, enabled, modRate = GetSpellCooldown(spellId)
-        return startTime or 0, duration or 0, enabled, modRate or 1
+        local ok, startTime, duration, enabled, modRate = pcall(GetSpellCooldown, spellId)
+        if ok then
+            return Secret.plainNumber(startTime), Secret.plainNumber(duration),
+                Secret.plainBool(enabled), Secret.plainNumber(modRate)
+        end
     end
 
     if C_Spell and C_Spell.GetSpellCooldown then
-        local info = C_Spell.GetSpellCooldown(spellId)
-        if info then
-            return info.startTime or 0, info.duration or 0, info.isEnabled, info.modRate or 1
+        local ok, info = pcall(C_Spell.GetSpellCooldown, spellId)
+        if ok and type(info) == "table" then
+            return Secret.plainNumber(info.startTime), Secret.plainNumber(info.duration),
+                Secret.plainBool(info.isEnabled), Secret.plainNumber(info.modRate)
         end
     end
 
     return nil
-end
-
--- True when the spell appears on a meaningful cooldown (not just GCD).
--- Charge spells: currentCharges > 0 means ready even while recharging.
-isSpellOnCooldown = function(spellId)
-    if not spellId then
-        return false
-    end
-    if C_Spell and C_Spell.GetSpellCharges then
-        local ok, chargeInfo = pcall(C_Spell.GetSpellCharges, spellId)
-        if ok and type(chargeInfo) == "table" and type(chargeInfo.currentCharges) == "number" then
-            if type(chargeInfo.maxCharges) == "number" and chargeInfo.maxCharges > 1 then
-                return chargeInfo.currentCharges <= 0
-            end
-            if chargeInfo.currentCharges > 0 then
-                return false
-            end
-            -- currentCharges == 0 with maxCharges==1 falls through to CD timer
-        end
-    end
-    local startTime, duration, enabled = getSpellCooldownInfo(spellId)
-    if enabled == false or enabled == 0 then
-        return true
-    end
-    if not startTime or not duration then
-        return false
-    end
-    if duration <= 1.5 then
-        return false
-    end
-    local now = (GetTime and GetTime()) or 0
-    return (startTime + duration - now) > 0.1
-end
-
-isSpellReadyNow = function(spellId)
-    if not isSpellUsableNow(spellId) then
-        return false
-    end
-    if isSpellOnCooldown(spellId) then
-        return false
-    end
-    return true
-end
-
---- Soft ranking readiness: unknown/secret usable → do not demote (fail-open).
-isSpellReadyForRankPrefer = function(spellId)
-    if not spellId then
-        return true
-    end
-    if C_Spell and C_Spell.IsSpellUsable then
-        local ok, usable = pcall(C_Spell.IsSpellUsable, spellId)
-        if not ok or type(usable) ~= "boolean" then
-            return true
-        end
-        if not usable then
-            return false
-        end
-    elseif IsUsableSpell then
-        local ok, usable = pcall(IsUsableSpell, spellId)
-        if not ok or type(usable) ~= "boolean" then
-            return true
-        end
-        if not usable then
-            return false
-        end
-    end
-    if isSpellOnCooldown(spellId) then
-        return false
-    end
-    return true
 end
 
 local function sanitizeSettings()
@@ -1375,11 +1294,8 @@ local function recommendReasonLabel(reason)
     if reason == "ac_candidate" then
         return L("WHY_AC_CANDIDATE")
     end
-    if reason == "simc_rank" then
-        return L("WHY_SIMC_RANK")
-    end
-    if reason == "ac_fallback" then
-        return L("WHY_AC_FALLBACK")
+    if reason == "simc_verified" then
+        return L("WHY_SIMC_VERIFIED")
     end
     if reason == "none" then
         return L("WHY_NONE")
@@ -1447,8 +1363,10 @@ function updateCooldownSpiral()
         return
     end
 
+    -- Cooldown numbers are secret in 12.0 combat; branching on them raw is the
+    -- one thing the whole secret layer exists to avoid. Unreadable -> no spiral.
     local startTime, duration, enabled, modRate = getSpellCooldownInfo(GCD_SPELL_ID)
-    if not startTime or not duration or enabled == false or enabled == 0 or duration <= 0 then
+    if not startTime or not duration or enabled == false or duration <= 0 then
         spiral:Hide()
         spiral:SetCooldown(0, 0, 1)
         return
@@ -1540,6 +1458,7 @@ local function refreshVisibility()
 end
 
 updateSpellState = function()
+    Eval.beginPass()
     local nextSpellId = getCurrentRecommendedSpellId()
     state.currentCastState, state.currentCastSpellId = getCurrentCastState()
     if nextSpellId and nextSpellId ~= state.currentSpellId then
@@ -3248,7 +3167,7 @@ local function createProcOptionsPanel(frame)
         end
         local added = 0
         for _, spellInfo in ipairs(state.availableSpells) do
-            if isProcActive(spellInfo.spellId) and not known[spellInfo.spellId] then
+            if Eval.isProcActive(spellInfo.spellId) and not known[spellInfo.spellId] then
                 upsertPriorityEntry("procs", spellInfo.spellId, state.procEditorColorIndex or 2)
                 known[spellInfo.spellId] = true
                 added = added + 1
@@ -3837,6 +3756,121 @@ local function printUsage()
     print(L("CMD_RESET"))
     print(L("CMD_LANG"))
     print(L("CMD_BLACKLIST"))
+    print(L("CMD_WHY"))
+end
+
+--------------------------------------------------------------------------------
+-- /sk why
+--
+-- Without this the pick is unauditable: nothing else shows which SimC condition
+-- was readable, which one vetoed a promotion, or whether the secret-value probe
+-- still works after a patch.
+--------------------------------------------------------------------------------
+
+local WHY_MAX_ROWS = 12
+
+local function whyPrint(text)
+    print("|cff33ff99Shinkili|r " .. text)
+end
+
+local function printWhyReport()
+    Eval.beginPass()
+
+    local secrets = Secret.getDiagnostics()
+    local function printSecretHealth()
+        whyPrint(string.format("  secrets: probe=%s issecretvalue=%s auras=%s cooldowns=%s",
+            secrets.probeAvailable and "ok" or "UNAVAILABLE",
+            secrets.hasIsSecretValue and "yes" or "no",
+            secrets.aurasSecret and "secret" or "plain",
+            secrets.cooldownsSecret and "secret" or "plain"))
+    end
+
+    if not isAssistedCombatAvailable() then
+        whyPrint(L("WHY_REPORT_HEADER"))
+        whyPrint("  ac: unavailable - no recommendation is produced")
+        -- Probe health is the reason this command exists; report it even when
+        -- there is no pick to explain.
+        printSecretHealth()
+        return
+    end
+
+    local simcAssist = db().simcAssist ~= false
+    local primary, lookahead, rotation = collectAcPositionInputs()
+    local simcEntries, specKey, context = getSimcContextForPick(simcAssist)
+    local blacklist = getBlacklistSettings()
+
+    local spellId, reason, detail = Logic.pickRecommendation(primary, lookahead, rotation, simcEntries, {
+        blacklistEntries = blacklist.entries,
+        blacklistEnabled = blacklist.enabled == true,
+        simcAssist = simcAssist,
+        displayOf = Eval.getDisplaySpellId,
+        castability = Eval.getCastability,
+        gateVerdict = Eval.evaluateEntry,
+        collectDetail = true,
+    })
+
+    whyPrint(L("WHY_REPORT_HEADER"))
+    if spellId then
+        whyPrint(string.format("  pick: %s (%d) - %s", getSpellNameSafe(spellId), spellId, tostring(reason)))
+    else
+        whyPrint("  pick: none - " .. tostring(reason))
+    end
+
+    printSecretHealth()
+
+    if ShinkiliTrack then
+        local track = ShinkiliTrack.getDiagnostics()
+        whyPrint(string.format("  track: scanned=%d cooldowns=%d charges=%d dots=%d pending=%d",
+            track.scannedSpells, track.activeCooldowns, track.chargeSpells,
+            track.trackedDots, track.pendingDotCasts))
+    end
+
+    whyPrint(string.format("  ac: primary=%s lookahead=%s rotation=%d",
+        primary and tostring(primary) or "-",
+        lookahead and tostring(lookahead) or "-",
+        rotation and #rotation or 0))
+
+    whyPrint(string.format("  pool=%d castable=%d%s",
+        detail.poolSize or 0,
+        detail.castableSize or 0,
+        detail.hardFilterEmpty and "  (all blocked - showing AC anyway)" or ""))
+    for index, row in ipairs(detail.pool) do
+        if index > WHY_MAX_ROWS then
+            whyPrint(string.format("    ... %d more", #detail.pool - WHY_MAX_ROWS))
+            break
+        end
+        whyPrint(string.format("    %s (%d) %s", getSpellNameSafe(row.id), row.id, row.castability))
+    end
+
+    if not simcAssist then
+        whyPrint("  simc: off")
+        return
+    end
+    if not simcEntries or #simcEntries == 0 then
+        whyPrint(string.format("  simc: no data for %s", specKey or "?"))
+        return
+    end
+
+    whyPrint(string.format("  simc: %s/%s, %d entries", specKey or "?", context or "?", #simcEntries))
+    for index, entry in ipairs(simcEntries) do
+        if index > WHY_MAX_ROWS then
+            whyPrint(string.format("    ... %d more", #simcEntries - WHY_MAX_ROWS))
+            break
+        end
+        local entryId = type(entry) == "table" and entry.id or entry
+        local displayId = Eval.getDisplaySpellId(entryId)
+        local marks = {}
+        for _, gate in ipairs(Eval.describeEntry(entry)) do
+            marks[#marks + 1] = gate.kind .. "=" .. gate.verdict
+        end
+        whyPrint(string.format("    %s (%s) gates=%s cast=%s%s%s",
+            getSpellNameSafe(displayId),
+            tostring(displayId),
+            Eval.evaluateEntry(entry),
+            Eval.getCastability(displayId),
+            #marks > 0 and ("  [" .. table.concat(marks, " ") .. "]") or "",
+            (spellId == displayId) and "  <== pick" or ""))
+    end
 end
 
 SLASH_SHINKILI1 = "/shinkili"
@@ -3962,6 +3996,11 @@ SlashCmdList.SHINKILI = function(msg)
         return
     end
 
+    if command == "why" then
+        printWhyReport()
+        return
+    end
+
     printUsage()
 end
 
@@ -4024,7 +4063,23 @@ local function initialize()
     addon:RegisterEvent("PLAYER_REGEN_ENABLED")
     addon:RegisterEvent("PLAYER_REGEN_DISABLED")
     addon:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
+    addon:RegisterEvent("ACTIONBAR_PAGE_CHANGED")
+    addon:RegisterEvent("UPDATE_BONUS_ACTIONBAR")
+    addon:RegisterEvent("ACTION_USABLE_CHANGED")
     addon:RegisterEvent("SPELLS_CHANGED")
+    -- Local cooldown / charge / DoT reconstruction (see ShinkiliTrack).
+    if addon.RegisterUnitEvent then
+        addon:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
+        addon:RegisterUnitEvent("UNIT_AURA", "target")
+    end
+    addon:RegisterEvent("SPELL_UPDATE_COOLDOWN")
+    addon:RegisterEvent("SPELL_UPDATE_CHARGES")
+    addon:RegisterEvent("PLAYER_TARGET_CHANGED")
+    addon:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+    addon:RegisterEvent("PLAYER_TALENT_UPDATE")
+    addon:RegisterEvent("TRAIT_CONFIG_UPDATED")
+
+    scanTrackedSpells()
 
     if C_Timer and C_Timer.NewTicker then
         C_Timer.NewTicker(0.05, function()
@@ -4053,13 +4108,22 @@ local function initialize()
             elseif state.optionsOpen then
                 updateCurrentSpellText()
             end
-            -- spiral already refreshed inside refreshVisibility via updateSpellState
-            updateCooldownSpiral()
         end)
     end
 end
 
-addon:SetScript("OnEvent", function(_, event, arg1)
+-- High-frequency state events: they only feed the tracker. Running the full
+-- refresh on every aura tick and cooldown pulse would burn frames for nothing --
+-- the 20Hz ticker already repaints.
+local TRACKER_ONLY_EVENTS = {
+    UNIT_SPELLCAST_SUCCEEDED = true,
+    UNIT_AURA = true,
+    SPELL_UPDATE_COOLDOWN = true,
+    SPELL_UPDATE_CHARGES = true,
+    PLAYER_TARGET_CHANGED = true,
+}
+
+addon:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "ADDON_LOADED" then
         if arg1 == addonName then
             initialize()
@@ -4067,8 +4131,41 @@ addon:SetScript("OnEvent", function(_, event, arg1)
         return
     end
 
+    -- Action-bar usability is the readable stand-in when C_Spell.IsSpellUsable
+    -- turns secret, so the slot cache must follow every bar change.
+    if event == "ACTION_USABLE_CHANGED" then
+        Eval.onActionUsableChanged(arg1)
+        return
+    end
+
+    if ShinkiliTrack then
+        ShinkiliTrack.handleEvent(event, arg1, arg2, arg3)
+    end
+    if TRACKER_ONLY_EVENTS[event] then
+        return
+    end
+
+    if event == "ACTIONBAR_SLOT_CHANGED"
+        or event == "ACTIONBAR_PAGE_CHANGED"
+        or event == "UPDATE_BONUS_ACTIONBAR"
+        or event == "SPELLS_CHANGED"
+        or event == "PLAYER_ENTERING_WORLD" then
+        Eval.invalidateActionBars()
+    end
+
     if event == "SPELLS_CHANGED" or event == "PLAYER_ENTERING_WORLD" then
         refreshAvailableSpells()
+    end
+
+    -- Out of combat the base-cooldown and charge data is readable; refresh the
+    -- static caches whenever the talent build or combat state could have moved.
+    if event == "SPELLS_CHANGED"
+        or event == "PLAYER_ENTERING_WORLD"
+        or event == "PLAYER_REGEN_ENABLED"
+        or event == "PLAYER_SPECIALIZATION_CHANGED"
+        or event == "PLAYER_TALENT_UPDATE"
+        or event == "TRAIT_CONFIG_UPDATED" then
+        scanTrackedSpells()
     end
 
     if event == "PLAYER_ENTERING_WORLD" then

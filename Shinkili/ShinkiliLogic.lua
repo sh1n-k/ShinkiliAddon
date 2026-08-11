@@ -439,46 +439,50 @@ function Logic.isSpellBlacklisted(entries, spellId, filterEnabled, displaySpellI
     return false
 end
 
---- Pick first non-blacklisted id from primary + candidates list.
-function Logic.pickRecommendedSpell(primarySpellId, candidateList, entries, filterEnabled)
-    if not filterEnabled then
-        return primarySpellId
-    end
+--- Confirmed-uncastable verdicts from the host's castability probe. Resource
+--- starvation is deliberately absent: it refills every GCD, so excluding on it
+--- would make the colour churn on every press.
+local BLOCKING_CASTABILITY = {
+    unusable = true,
+    out_of_range = true,
+    on_cd = true,
+}
 
-    if primarySpellId and not Logic.isSpellBlacklisted(entries, primarySpellId, true) then
-        return primarySpellId
-    end
-
-    if type(candidateList) == "table" then
-        for _, spellId in ipairs(candidateList) do
-            local id = tonumber(spellId)
-            if id and id > 0 and not Logic.isSpellBlacklisted(entries, id, true) then
-                return id
-            end
-        end
-    end
-
-    return nil
-end
-
---- JustAC-inspired position-1 core (single spell for KeySim / color box).
+--- Single best pick for the colour box.
 ---
---- Stages (JustAC SpellQueue._StagePrimary + Shinkili single-box hybrid):
----   A) Build ordered live pool: primary → lookahead → rotation (BL/suppress/display)
----   B) Pure AC path: first survivor = position-1 (primary / lookahead / candidate)
----   C) Optional SimC reorder among pool only (simcAssist; never invents outside AC)
----   D) Soft prefer ready (isUsable) without emptying the list
+--- The goal is a SimC-faithful recommendation, but only where the client can
+--- actually prove SimC's conditions hold. Everything the 12.0 secret-value rules
+--- hide reads back as "unknown", and unknown never wins -- it defers to
+--- Blizzard's live Assisted Combat pick. That is what keeps the result at least
+--- as good as plain AC on specs whose APL conditions are unreadable, while
+--- letting SimC take over on the ones where they are not.
 ---
---- Returns: spellId|nil, reason ("ac_primary"|"ac_lookahead"|"ac_candidate"|"simc_rank"|"none")
-function Logic.pickPosition1Recommendation(primarySpellId, lookaheadSpellId, rotationList, simcEntries, options)
+--- Stages:
+---   A) Live pool: AC primary -> highlight lookahead -> rotation list, normalised
+---      to display ids, blacklisted entries removed.
+---   B) Hard filter: drop everything the game confirms cannot be cast right now.
+---   C) SimC override: walk the SimC priority order and take the first entry
+---      that is in the pool, has every gate proven, and is castable right now.
+---   D) Otherwise Blizzard's own order: primary, lookahead, first survivor.
+---
+--- options:
+---   blacklistEntries, blacklistEnabled, simcAssist,
+---   displayOf(id) -> displayId
+---   castability(id) -> "ready"|"no_resource"|"unusable"|"out_of_range"|"on_cd"|"unknown"
+---   gateVerdict(entry) -> "pass"|"fail"|"unknown"
+---   collectDetail -> also return a diagnostic table (allocates; /sk why only)
+---
+--- Returns: spellId|nil, reason, detail|nil
+--- reason: "simc_verified" | "ac_primary" | "ac_lookahead" | "ac_candidate" | "none"
+function Logic.pickRecommendation(primarySpellId, lookaheadSpellId, rotationList, simcEntries, options)
     options = options or {}
     local blacklistEntries = options.blacklistEntries
     local blacklistEnabled = options.blacklistEnabled == true
     local simcAssist = options.simcAssist == true
-    local gateOk = options.gateOk
-    local isUsable = options.isUsable
     local displayOf = options.displayOf
-    local suppressPick = options.suppressPick -- optional (spellId)->bool (e.g. caster filler)
+    local castabilityOf = options.castability
+    local gateVerdict = options.gateVerdict
+    local detail = options.collectDetail == true and {pool = {}, simc = {}} or nil
 
     local primary = tonumber(primarySpellId)
     local lookahead = tonumber(lookaheadSpellId)
@@ -489,46 +493,38 @@ function Logic.pickPosition1Recommendation(primarySpellId, lookaheadSpellId, rot
             return nil
         end
         if type(displayOf) == "function" then
-            local d = tonumber(displayOf(spellId))
-            if d and d > 0 then
-                return d
+            local resolved = tonumber(displayOf(spellId))
+            if resolved and resolved > 0 then
+                return resolved
             end
         end
         return spellId
     end
 
-    local function blocked(spellId)
+    local function excluded(spellId)
         spellId = tonumber(spellId)
         if not spellId or spellId <= 0 then
             return true
         end
         local disp = displayId(spellId)
-        if Logic.isSpellBlacklisted(blacklistEntries, spellId, blacklistEnabled, disp, displayOf) then
-            return true
-        end
-        if type(suppressPick) == "function" then
-            if suppressPick(spellId) or (disp and disp ~= spellId and suppressPick(disp)) then
-                return true
-            end
-        end
-        return false
+        return Logic.isSpellBlacklisted(blacklistEntries, spellId, blacklistEnabled, disp, displayOf)
     end
 
-    -- Stage A: ordered live pool (display-normalized, deduped)
+    -- Stage A: ordered live pool, keyed only by display id so a base id can never
+    -- shadow a different candidate that happens to display as it.
     local pool = {}
-    local inPool = {}
+    local poolSet = {}
     local function addPool(spellId)
         spellId = tonumber(spellId)
-        if not spellId or spellId <= 0 or blocked(spellId) then
+        if not spellId or spellId <= 0 or excluded(spellId) then
             return
         end
         local disp = displayId(spellId)
-        if not disp or inPool[disp] then
+        if not disp or poolSet[disp] then
             return
         end
-        inPool[disp] = true
-        inPool[spellId] = true
-        table.insert(pool, disp)
+        poolSet[disp] = true
+        pool[#pool + 1] = disp
     end
 
     if primary and primary > 0 then
@@ -544,105 +540,98 @@ function Logic.pickPosition1Recommendation(primarySpellId, lookaheadSpellId, rot
     end
 
     if #pool == 0 then
-        return nil, "none"
+        return nil, "none", detail
     end
 
-    local primaryDisp = primary and displayId(primary) or nil
-    local lookaheadDisp = lookahead and displayId(lookahead) or nil
+    local primaryDisplay = primary and displayId(primary) or nil
+    local lookaheadDisplay = lookahead and displayId(lookahead) or nil
 
-    local function reasonForAc(spellId)
-        spellId = tonumber(spellId)
-        if primaryDisp and spellId == primaryDisp then
-            return "ac_primary"
+    -- Stage B: hard castability filter.
+    local castVerdict = {}
+    local castable = {}
+    local castableSet = {}
+    for _, spellId in ipairs(pool) do
+        local verdict = "unknown"
+        if type(castabilityOf) == "function" then
+            verdict = castabilityOf(spellId) or "unknown"
         end
-        if lookaheadDisp and spellId == lookaheadDisp then
-            return "ac_lookahead"
+        castVerdict[spellId] = verdict
+        if not BLOCKING_CASTABILITY[verdict] then
+            castable[#castable + 1] = spellId
+            castableSet[spellId] = true
         end
-        return "ac_candidate"
+        if detail then
+            detail.pool[#detail.pool + 1] = {id = spellId, castability = verdict}
+        end
     end
 
-    local function pickFrom(ordered, useSimcReasons, simcMatched, applyUsable)
-        if applyUsable and type(isUsable) == "function" then
-            for _, spellId in ipairs(ordered) do
-                if isUsable(spellId) ~= false then
-                    if useSimcReasons and simcMatched and simcMatched[spellId] then
-                        return spellId, "simc_rank"
-                    end
-                    return spellId, reasonForAc(spellId)
-                end
-            end
-        end
-        local id = ordered[1]
-        if useSimcReasons and simcMatched and simcMatched[id] then
-            return id, "simc_rank"
-        end
-        return id, reasonForAc(id)
+    -- Everything reads uncastable: far more likely our probes are blind than that
+    -- the whole rotation is down, so keep showing Blizzard's opinion.
+    local hardFilterEmpty = #castable == 0
+    local candidates = hardFilterEmpty and pool or castable
+    local candidateSet = hardFilterEmpty and poolSet or castableSet
+    if detail then
+        detail.hardFilterEmpty = hardFilterEmpty
+        detail.poolSize = #pool
+        detail.castableSize = #castable
     end
 
-    -- Stage C/D: SimC reorder among pool only (does not invent outside AC live set)
-    if simcAssist and type(simcEntries) == "table" and #simcEntries > 0 then
-        local ranked = {}
-        local rankedSeen = {}
-        local simcMatched = {}
-        local function addRanked(spellId, fromSimc)
-            spellId = tonumber(spellId)
-            if not spellId or rankedSeen[spellId] or not inPool[spellId] then
-                return
-            end
-            rankedSeen[spellId] = true
-            table.insert(ranked, spellId)
-            if fromSimc then
-                simcMatched[spellId] = true
-            end
-        end
-
+    -- Stage C: SimC may override, but only on a fully proven entry.
+    if simcAssist and type(simcEntries) == "table" and #simcEntries > 0
+        and type(gateVerdict) == "function" then
         for _, entry in ipairs(simcEntries) do
-            local spellId = type(entry) == "table" and entry.id or entry
-            spellId = displayId(spellId)
-            if type(entry) == "table" and type(gateOk) == "function" then
-                if gateOk(entry) then
-                    addRanked(spellId, true)
+            local rawId = type(entry) == "table" and entry.id or entry
+            local spellId = displayId(rawId)
+            if spellId and candidateSet[spellId] then
+                local gates = gateVerdict(entry)
+                local cast = castVerdict[spellId]
+                if detail then
+                    detail.simc[#detail.simc + 1] = {
+                        id = spellId,
+                        gates = gates,
+                        castability = cast,
+                    }
                 end
-            else
-                addRanked(spellId, true)
+                if gates == "pass" and cast == "ready" then
+                    if primaryDisplay and spellId == primaryDisplay then
+                        -- SimC and Blizzard agree; report the simpler reason.
+                        return spellId, "ac_primary", detail
+                    end
+                    return spellId, "simc_verified", detail
+                end
             end
         end
-        for _, spellId in ipairs(pool) do
-            addRanked(spellId, false)
-        end
-
-        if #ranked == 0 then
-            return nil, "none"
-        end
-        -- Soft prefer ready only when SimC actually overlapped the live pool.
-        local hasSimcHit = next(simcMatched) ~= nil
-        return pickFrom(ranked, true, simcMatched, hasSimcHit)
     end
 
-    -- Stage B: pure AC position-1 (JustAC: primary, else highlight, else rotation head)
-    return pickFrom(pool, false, nil, false)
-end
+    -- Stage D: Blizzard's own order.
+    if primaryDisplay and candidateSet[primaryDisplay] then
+        return primaryDisplay, "ac_primary", detail
+    end
+    if lookaheadDisplay and candidateSet[lookaheadDisplay] then
+        return lookaheadDisplay, "ac_lookahead", detail
+    end
 
---- Compatibility: older pickBest API maps onto position-1 core.
---- acCandidateList[1] is treated as lookahead; full list as rotation tail.
-function Logic.pickBestRecommendation(primarySpellId, acCandidateList, simcEntries, options)
-    options = options or {}
-    local lookahead = nil
-    local rotation = {}
-    if type(acCandidateList) == "table" then
-        if acCandidateList[1] then
-            lookahead = acCandidateList[1]
-        end
-        for i = 1, #acCandidateList do
-            table.insert(rotation, acCandidateList[i])
+    -- Nobody vouches for this pick: neither Blizzard nor SimC named it. So at
+    -- least prefer one the game says is castable right now over one we merely
+    -- could not read.
+    local first
+    for _, spellId in ipairs(candidates) do
+        if castVerdict[spellId] == "ready" then
+            first = spellId
+            break
         end
     end
-    return Logic.pickPosition1Recommendation(primarySpellId, lookahead, rotation, simcEntries, options)
-end
-
-function Logic.pickHybridRecommendation(primarySpellId, acCandidateList, simcEntries, options)
-    local spellId = Logic.pickBestRecommendation(primarySpellId, acCandidateList, simcEntries, options)
-    return spellId
+    first = first or candidates[1]
+    if not first then
+        return nil, "none", detail
+    end
+    if primaryDisplay and first == primaryDisplay then
+        return first, "ac_primary", detail
+    end
+    if lookaheadDisplay and first == lookaheadDisplay then
+        return first, "ac_lookahead", detail
+    end
+    return first, "ac_candidate", detail
 end
 
 function Logic.getSimcSpecTable(simcData, specKey)
