@@ -406,20 +406,34 @@ function Logic.sanitizeBlacklistEntries(entries)
     return migrated
 end
 
-function Logic.isSpellBlacklisted(entries, spellId, filterEnabled)
-    if filterEnabled == false then
+--- displaySpellId: candidate's display/override id
+--- displayOf: optional (id)->display so book-base BL entries match AC override ids
+function Logic.isSpellBlacklisted(entries, spellId, filterEnabled, displaySpellId, displayOf)
+    if filterEnabled ~= true then
         return false
     end
-    if not spellId or type(entries) ~= "table" then
+    if type(entries) ~= "table" then
         return false
     end
     spellId = tonumber(spellId)
-    if not spellId then
+    displaySpellId = tonumber(displaySpellId)
+    if not spellId and not displaySpellId then
         return false
     end
     for _, entry in ipairs(entries) do
-        if entry.enabled ~= false and tonumber(entry.spellId) == spellId then
-            return true
+        if entry.enabled ~= false then
+            local blocked = tonumber(entry.spellId)
+            if blocked then
+                if blocked == spellId or blocked == displaySpellId then
+                    return true
+                end
+                if type(displayOf) == "function" then
+                    local blockedDisp = tonumber(displayOf(blocked))
+                    if blockedDisp and (blockedDisp == spellId or blockedDisp == displaySpellId) then
+                        return true
+                    end
+                end
+            end
         end
     end
     return false
@@ -447,48 +461,84 @@ function Logic.pickRecommendedSpell(primarySpellId, candidateList, entries, filt
     return nil
 end
 
---- Single-box "best pick" pipeline (product intent):
---- 1) Build AC live pool: primary + AC candidates (unique, blacklist-filtered)
---- 2) Rank: SimC order among pool when simcAssist, else AC pool order
---- 3) Prefer first usable (isUsable~=false); else first ranked
---- Returns: spellId|nil, reason string
+--- JustAC-inspired position-1 core (single spell for KeySim / color box).
 ---
---- options:
----   blacklistEntries, blacklistEnabled, simcAssist,
----   gateOk(entry)->bool, isUsable(spellId)->bool|nil
-function Logic.pickBestRecommendation(primarySpellId, acCandidateList, simcEntries, options)
+--- Stages (JustAC SpellQueue._StagePrimary + Shinkili single-box hybrid):
+---   A) Build ordered live pool: primary → lookahead → rotation (BL/suppress/display)
+---   B) Pure AC path: first survivor = position-1 (primary / lookahead / candidate)
+---   C) Optional SimC reorder among pool only (simcAssist; never invents outside AC)
+---   D) Soft prefer ready (isUsable) without emptying the list
+---
+--- Returns: spellId|nil, reason ("ac_primary"|"ac_lookahead"|"ac_candidate"|"simc_rank"|"none")
+function Logic.pickPosition1Recommendation(primarySpellId, lookaheadSpellId, rotationList, simcEntries, options)
     options = options or {}
     local blacklistEntries = options.blacklistEntries
     local blacklistEnabled = options.blacklistEnabled == true
     local simcAssist = options.simcAssist == true
     local gateOk = options.gateOk
     local isUsable = options.isUsable
+    local displayOf = options.displayOf
+    local suppressPick = options.suppressPick -- optional (spellId)->bool (e.g. caster filler)
 
-    local function allowed(spellId)
+    local primary = tonumber(primarySpellId)
+    local lookahead = tonumber(lookaheadSpellId)
+
+    local function displayId(spellId)
         spellId = tonumber(spellId)
-        if not spellId or spellId <= 0 then
-            return false
+        if not spellId then
+            return nil
         end
-        if Logic.isSpellBlacklisted(blacklistEntries, spellId, blacklistEnabled) then
-            return false
+        if type(displayOf) == "function" then
+            local d = tonumber(displayOf(spellId))
+            if d and d > 0 then
+                return d
+            end
         end
-        return true
+        return spellId
     end
 
+    local function blocked(spellId)
+        spellId = tonumber(spellId)
+        if not spellId or spellId <= 0 then
+            return true
+        end
+        local disp = displayId(spellId)
+        if Logic.isSpellBlacklisted(blacklistEntries, spellId, blacklistEnabled, disp, displayOf) then
+            return true
+        end
+        if type(suppressPick) == "function" then
+            if suppressPick(spellId) or (disp and disp ~= spellId and suppressPick(disp)) then
+                return true
+            end
+        end
+        return false
+    end
+
+    -- Stage A: ordered live pool (display-normalized, deduped)
     local pool = {}
     local inPool = {}
     local function addPool(spellId)
         spellId = tonumber(spellId)
-        if not spellId or inPool[spellId] or not allowed(spellId) then
+        if not spellId or spellId <= 0 or blocked(spellId) then
             return
         end
+        local disp = displayId(spellId)
+        if not disp or inPool[disp] then
+            return
+        end
+        inPool[disp] = true
         inPool[spellId] = true
-        table.insert(pool, spellId)
+        table.insert(pool, disp)
     end
 
-    addPool(primarySpellId)
-    if type(acCandidateList) == "table" then
-        for _, spellId in ipairs(acCandidateList) do
+    if primary and primary > 0 then
+        addPool(primary)
+    end
+    if lookahead and lookahead > 0 and lookahead ~= primary then
+        addPool(lookahead)
+    end
+    if type(rotationList) == "table" then
+        for _, spellId in ipairs(rotationList) do
             addPool(spellId)
         end
     end
@@ -497,82 +547,100 @@ function Logic.pickBestRecommendation(primarySpellId, acCandidateList, simcEntri
         return nil, "none"
     end
 
-    local ranked = {}
-    local rankedSeen = {}
-    local function addRanked(spellId)
+    local primaryDisp = primary and displayId(primary) or nil
+    local lookaheadDisp = lookahead and displayId(lookahead) or nil
+
+    local function reasonForAc(spellId)
         spellId = tonumber(spellId)
-        if not spellId or not inPool[spellId] or rankedSeen[spellId] then
-            return
-        end
-        rankedSeen[spellId] = true
-        table.insert(ranked, spellId)
-    end
-
-    local usedSimc = false
-    if simcAssist and type(simcEntries) == "table" and #simcEntries > 0 then
-        usedSimc = true
-        for _, entry in ipairs(simcEntries) do
-            local spellId = type(entry) == "table" and entry.id or entry
-            if type(entry) == "table" and type(gateOk) == "function" then
-                if gateOk(entry) then
-                    addRanked(spellId)
-                end
-            else
-                addRanked(spellId)
-            end
-        end
-    end
-
-    -- Fill remaining in AC pool order (primary first).
-    for _, spellId in ipairs(pool) do
-        addRanked(spellId)
-    end
-
-    if #ranked == 0 then
-        return nil, "none"
-    end
-
-    local simcMatched = {}
-    if usedSimc and type(simcEntries) == "table" then
-        for _, entry in ipairs(simcEntries) do
-            local sid = type(entry) == "table" and tonumber(entry.id) or tonumber(entry)
-            if sid and inPool[sid] then
-                if type(entry) ~= "table" or type(gateOk) ~= "function" or gateOk(entry) then
-                    simcMatched[sid] = true
-                end
-            end
-        end
-    end
-
-    local function reasonFor(spellId)
-        spellId = tonumber(spellId)
-        if simcMatched[spellId] then
-            return "simc_rank"
-        end
-        if primarySpellId and tonumber(primarySpellId) == spellId then
+        if primaryDisp and spellId == primaryDisp then
             return "ac_primary"
         end
-        if usedSimc then
-            return "ac_fallback"
+        if lookaheadDisp and spellId == lookaheadDisp then
+            return "ac_lookahead"
         end
         return "ac_candidate"
     end
 
-    local first = ranked[1]
-    if type(isUsable) == "function" then
-        for _, spellId in ipairs(ranked) do
-            if isUsable(spellId) ~= false then
-                return spellId, reasonFor(spellId)
+    local function pickFrom(ordered, useSimcReasons, simcMatched, applyUsable)
+        if applyUsable and type(isUsable) == "function" then
+            for _, spellId in ipairs(ordered) do
+                if isUsable(spellId) ~= false then
+                    if useSimcReasons and simcMatched and simcMatched[spellId] then
+                        return spellId, "simc_rank"
+                    end
+                    return spellId, reasonForAc(spellId)
+                end
             end
         end
+        local id = ordered[1]
+        if useSimcReasons and simcMatched and simcMatched[id] then
+            return id, "simc_rank"
+        end
+        return id, reasonForAc(id)
     end
 
-    return first, reasonFor(first)
+    -- Stage C/D: SimC reorder among pool only (does not invent outside AC live set)
+    if simcAssist and type(simcEntries) == "table" and #simcEntries > 0 then
+        local ranked = {}
+        local rankedSeen = {}
+        local simcMatched = {}
+        local function addRanked(spellId, fromSimc)
+            spellId = tonumber(spellId)
+            if not spellId or rankedSeen[spellId] or not inPool[spellId] then
+                return
+            end
+            rankedSeen[spellId] = true
+            table.insert(ranked, spellId)
+            if fromSimc then
+                simcMatched[spellId] = true
+            end
+        end
+
+        for _, entry in ipairs(simcEntries) do
+            local spellId = type(entry) == "table" and entry.id or entry
+            spellId = displayId(spellId)
+            if type(entry) == "table" and type(gateOk) == "function" then
+                if gateOk(entry) then
+                    addRanked(spellId, true)
+                end
+            else
+                addRanked(spellId, true)
+            end
+        end
+        for _, spellId in ipairs(pool) do
+            addRanked(spellId, false)
+        end
+
+        if #ranked == 0 then
+            return nil, "none"
+        end
+        -- Soft prefer ready only when SimC actually overlapped the live pool.
+        local hasSimcHit = next(simcMatched) ~= nil
+        return pickFrom(ranked, true, simcMatched, hasSimcHit)
+    end
+
+    -- Stage B: pure AC position-1 (JustAC: primary, else highlight, else rotation head)
+    return pickFrom(pool, false, nil, false)
 end
 
---- Backward-compatible wrapper around pickBestRecommendation.
-function Logic.pickHybridRecommendation(primarySpellId, acCandidateList, simcEntries, options)
+--- Compatibility: older pickBest API maps onto position-1 core.
+--- acCandidateList[1] is treated as lookahead; full list as rotation tail.
+function Logic.pickBestRecommendation(primarySpellId, acCandidateList, simcEntries, options)
     options = options or {}
+    local lookahead = nil
+    local rotation = {}
+    if type(acCandidateList) == "table" then
+        if acCandidateList[1] then
+            lookahead = acCandidateList[1]
+        end
+        for i = 1, #acCandidateList do
+            table.insert(rotation, acCandidateList[i])
+        end
+    end
+    return Logic.pickPosition1Recommendation(primarySpellId, lookahead, rotation, simcEntries, options)
+end
+
+function Logic.pickHybridRecommendation(primarySpellId, acCandidateList, simcEntries, options)
     local spellId = Logic.pickBestRecommendation(primarySpellId, acCandidateList, simcEntries, options)
     return spellId
 end

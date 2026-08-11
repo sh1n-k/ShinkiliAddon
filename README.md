@@ -4,7 +4,7 @@ WoW retail addon: turns Blizzard Assisted Combat recommendations into configurab
 
 ## Features
 - Map recommended spells to colors (main box)
-- **Rank mode**: AC supplies live candidates; optional SimC order ranks them for the single best color signal
+- **Position-1 core** (JustAC-style): AC primary → highlight lookahead → rotation pool; optional SimC ranks inside that live pool for one best color signal
 - Defense tab: separate priority color box for usable defensive skills
 - Procs tab: active spell overlays override the main box
 - Blacklist tab with keybind toggle + center toast

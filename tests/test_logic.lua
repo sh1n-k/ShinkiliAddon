@@ -249,6 +249,118 @@ id, reason = Logic.pickBestRecommendation(200, {100}, simcEntries, {
 })
 check("gate skips proc-gated id in simc pass", id == 100 and reason == "simc_rank")
 
+-- Position-1 core API (primary / lookahead / rotation explicit)
+id, reason = Logic.pickPosition1Recommendation(10, 20, {30, 40}, nil, {
+    simcAssist = false,
+    blacklistEnabled = false,
+})
+check("p1 primary wins", id == 10 and reason == "ac_primary")
+
+id, reason = Logic.pickPosition1Recommendation(10, 20, {30}, nil, {
+    simcAssist = false,
+    blacklistEnabled = true,
+    blacklistEntries = {{spellId = 10, enabled = true}},
+})
+check("p1 blacklist uses lookahead", id == 20 and reason == "ac_lookahead")
+
+id, reason = Logic.pickPosition1Recommendation(10, 20, {30, 40}, nil, {
+    simcAssist = false,
+    blacklistEnabled = true,
+    blacklistEntries = {
+        {spellId = 10, enabled = true},
+        {spellId = 20, enabled = true},
+    },
+})
+check("p1 rotation after primary+lookahead blocked", id == 30 and reason == "ac_candidate")
+
+id, reason = Logic.pickPosition1Recommendation(10, 20, {30, 300}, simcEntries, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    gateOk = gateOk,
+})
+-- pool {10,20,30,300}; SimC order 100(out),200(gate fail),300 → 300 ranks first among pool
+check("p1 simc ranks within pool", id == 300 and reason == "simc_rank")
+
+id, reason = Logic.pickPosition1Recommendation(9001, 20, {30}, nil, {
+    simcAssist = false,
+    blacklistEnabled = true,
+    blacklistEntries = {{spellId = 9999, enabled = true}},
+    displayOf = function(spellId)
+        if spellId == 9001 then
+            return 9999
+        end
+        return spellId
+    end,
+})
+check("p1 blacklist matches display id", id == 20 and reason == "ac_lookahead")
+
+-- BL stores book base; AC supplies override id → still blocked via displayOf(entry)
+id, reason = Logic.pickPosition1Recommendation(9001, 20, {30}, nil, {
+    simcAssist = false,
+    blacklistEnabled = true,
+    blacklistEntries = {{spellId = 8000, enabled = true}},
+    displayOf = function(spellId)
+        if spellId == 8000 or spellId == 9001 then
+            return 9001
+        end
+        return spellId
+    end,
+})
+check("p1 blacklist reverse displayOf entry", id == 20 and reason == "ac_lookahead")
+
+id, reason = Logic.pickPosition1Recommendation(10, 20, {30}, nil, {
+    simcAssist = false,
+    blacklistEnabled = false,
+    suppressPick = function(spellId)
+        return spellId == 10
+    end,
+})
+check("p1 suppress primary uses lookahead", id == 20 and reason == "ac_lookahead")
+
+id, reason = Logic.pickPosition1Recommendation(10, 20, {30, 100, 300}, simcEntries, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    gateOk = gateOk,
+    isUsable = function(spellId)
+        return spellId ~= 100
+    end,
+})
+-- SimC among pool: 100 then 300; 100 unusable → 300
+check("p1 simc soft skip unusable", id == 300 and reason == "simc_rank")
+
+-- All unusable → soft fallback to ranked head (do not empty)
+id, reason = Logic.pickPosition1Recommendation(10, 20, {100}, simcEntries, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    gateOk = gateOk,
+    isUsable = function()
+        return false
+    end,
+})
+check("p1 all unusable soft keeps head", id == 100 and reason == "simc_rank")
+
+-- simcAssist on but empty entries → pure AC (no soft usable demotion path needed)
+id, reason = Logic.pickPosition1Recommendation(10, 20, {30}, {}, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    isUsable = function()
+        return false
+    end,
+})
+check("p1 empty simc stays AC primary", id == 10 and reason == "ac_primary")
+
+-- No SimC pool overlap → ignore isUsable demotion of AC primary
+id, reason = Logic.pickPosition1Recommendation(10, 20, {30}, {{id = 999}}, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    isUsable = function(spellId)
+        return spellId ~= 10
+    end,
+})
+check("p1 no simc hit skips usable demote", id == 10 and reason == "ac_primary")
+
+check("blacklist nil filter is off", Logic.isSpellBlacklisted(bl, 7, nil) == false)
+
 local fakeData = {
     specs = {
         TEST_1 = {

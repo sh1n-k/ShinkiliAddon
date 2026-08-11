@@ -497,14 +497,39 @@ local function refreshAvailableSpells()
     state.availableSpells = available
 end
 
+--- Display / transform spell id (JustAC GetDisplaySpellID). Forward-used by mapping lookup.
+local function getDisplaySpellId(spellId)
+    spellId = tonumber(spellId)
+    if not spellId or spellId <= 0 then
+        return spellId
+    end
+    if C_Spell and C_Spell.GetOverrideSpell then
+        local ok, override = pcall(C_Spell.GetOverrideSpell, spellId)
+        if ok and type(override) == "number" and override > 0 then
+            return override
+        end
+    end
+    return spellId
+end
+
+--- Match mapping by base id or display/override id (KeySim colors stay bound to book ids).
 local function findMappingIndexBySpell(spellId)
+    spellId = tonumber(spellId)
     if not spellId then
         return nil
     end
 
+    local displayId = getDisplaySpellId(spellId)
     for index, mapping in ipairs(db().mappings) do
-        if mapping.spellId == spellId then
-            return index
+        local mid = tonumber(mapping.spellId)
+        if mid then
+            if mid == spellId or mid == displayId then
+                return index
+            end
+            local mdisp = getDisplaySpellId(mid)
+            if mdisp == spellId or mdisp == displayId then
+                return index
+            end
         end
     end
 
@@ -645,14 +670,21 @@ local function isSpellUsableNow(spellId)
     if C_Spell and C_Spell.IsSpellUsable then
         local ok, usable = pcall(C_Spell.IsSpellUsable, spellId)
         if ok then
-            return usable and true or false
+            -- Non-boolean (e.g. combat secret) → unusable for defense fail-closed.
+            if type(usable) ~= "boolean" then
+                return false
+            end
+            return usable
         end
     end
 
     if IsUsableSpell then
         local ok, usable = pcall(IsUsableSpell, spellId)
         if ok then
-            return usable and true or false
+            if type(usable) ~= "boolean" then
+                return false
+            end
+            return usable
         end
     end
 
@@ -662,6 +694,7 @@ end
 local getSpellCooldownInfo
 local isSpellOnCooldown
 local isSpellReadyNow
+local isSpellReadyForRankPrefer
 
 local function isProcActive(spellId)
     if not spellId then
@@ -837,23 +870,43 @@ local function evaluateSimcEntryGates(entry)
     return true
 end
 
-local function collectAcCandidates(primary)
-    local candidates = {}
+--- Live AC triple for position-1:
+---   primary  = GetNextCastSpell(false) include hidden (KeySim: full AC pick)
+---   lookahead = GetNextCastSpell(true) highlight / visible-bar only (JustAC GetHighlightCastSpell)
+---   rotation = GetRotationSpells (validated)
+--- JustAC default profile uses visible-only for both; we keep include-hidden primary for
+--- higher single-box quality, with highlight as BL/suppress substitute.
+local function collectAcPositionInputs()
+    local primary, lookahead, rotation = nil, nil, nil
+
     if C_AssistedCombat and C_AssistedCombat.GetNextCastSpell then
-        local okAlt, alt = pcall(C_AssistedCombat.GetNextCastSpell, true)
-        if okAlt and alt and alt ~= primary then
-            table.insert(candidates, alt)
+        local okPrimary, p = pcall(C_AssistedCombat.GetNextCastSpell, false)
+        if okPrimary and type(p) == "number" and p > 0 then
+            primary = p
+        end
+        local okHl, h = pcall(C_AssistedCombat.GetNextCastSpell, true)
+        if okHl and type(h) == "number" and h > 0 then
+            lookahead = h
         end
     end
+
     if C_AssistedCombat and C_AssistedCombat.GetRotationSpells then
-        local okRot, rotation = pcall(C_AssistedCombat.GetRotationSpells)
-        if okRot and type(rotation) == "table" then
-            for _, spellId in ipairs(rotation) do
-                table.insert(candidates, spellId)
+        local okRot, rot = pcall(C_AssistedCombat.GetRotationSpells)
+        if okRot and type(rot) == "table" and #rot > 0 then
+            local clean = {}
+            for i = 1, #rot do
+                local id = rot[i]
+                if type(id) ~= "number" or id <= 0 then
+                    clean = nil
+                    break
+                end
+                clean[i] = id
             end
+            rotation = clean
         end
     end
-    return candidates
+
+    return primary, lookahead, rotation
 end
 
 local function getCurrentRecommendedSpellId()
@@ -862,17 +915,12 @@ local function getCurrentRecommendedSpellId()
     if not C_AssistedCombat or not C_AssistedCombat.IsAvailable or not C_AssistedCombat.GetNextCastSpell then
         return nil
     end
-    if not C_AssistedCombat.IsAvailable() then
+    local okAvail, available = pcall(C_AssistedCombat.IsAvailable)
+    if not okAvail or not available then
         return nil
     end
 
-    local okPrimary, primary = pcall(C_AssistedCombat.GetNextCastSpell)
-    if not okPrimary then
-        primary = nil
-    end
-
-    -- AC live alts after primary (highlight + rotation). Primary is passed separately.
-    local candidates = collectAcCandidates(primary)
+    local primary, lookahead, rotation = collectAcPositionInputs()
 
     local blacklist = getBlacklistSettings()
     local simcAssist = db().simcAssist ~= false
@@ -885,14 +933,17 @@ local function getCurrentRecommendedSpellId()
         simcEntries = Logic.getSimcContextEntries(specTable, useAoe)
     end
 
-    local spellId, reason = Logic.pickBestRecommendation(primary, candidates, simcEntries, {
+    -- JustAC position-1 core + optional in-pool SimC rank for single-box KeySim pick.
+    local spellId, reason = Logic.pickPosition1Recommendation(primary, lookahead, rotation, simcEntries, {
         blacklistEntries = blacklist.entries,
         blacklistEnabled = blacklist.enabled == true,
         simcAssist = simcAssist,
         gateOk = evaluateSimcEntryGates,
-        -- Soft prefer ready spells only when actively ranking with a SimC list.
+        displayOf = getDisplaySpellId,
+        -- Soft prefer ready only when SimC list present; Logic applies only on real pool hits.
+        -- Fail-open when usable/CD unreadable so secret values do not demote AC primary.
         isUsable = (simcAssist and simcEntries and #simcEntries > 0) and function(id)
-            return isSpellReadyNow(id)
+            return isSpellReadyForRankPrefer(id)
         end or nil,
     })
     state.recommendReason = reason
@@ -953,9 +1004,22 @@ getSpellCooldownInfo = function(spellId)
 end
 
 -- True when the spell appears on a meaningful cooldown (not just GCD).
+-- Charge spells: currentCharges > 0 means ready even while recharging.
 isSpellOnCooldown = function(spellId)
     if not spellId then
         return false
+    end
+    if C_Spell and C_Spell.GetSpellCharges then
+        local ok, chargeInfo = pcall(C_Spell.GetSpellCharges, spellId)
+        if ok and type(chargeInfo) == "table" and type(chargeInfo.currentCharges) == "number" then
+            if type(chargeInfo.maxCharges) == "number" and chargeInfo.maxCharges > 1 then
+                return chargeInfo.currentCharges <= 0
+            end
+            if chargeInfo.currentCharges > 0 then
+                return false
+            end
+            -- currentCharges == 0 with maxCharges==1 falls through to CD timer
+        end
     end
     local startTime, duration, enabled = getSpellCooldownInfo(spellId)
     if enabled == false or enabled == 0 then
@@ -974,6 +1038,34 @@ end
 isSpellReadyNow = function(spellId)
     if not isSpellUsableNow(spellId) then
         return false
+    end
+    if isSpellOnCooldown(spellId) then
+        return false
+    end
+    return true
+end
+
+--- Soft ranking readiness: unknown/secret usable → do not demote (fail-open).
+isSpellReadyForRankPrefer = function(spellId)
+    if not spellId then
+        return true
+    end
+    if C_Spell and C_Spell.IsSpellUsable then
+        local ok, usable = pcall(C_Spell.IsSpellUsable, spellId)
+        if not ok or type(usable) ~= "boolean" then
+            return true
+        end
+        if not usable then
+            return false
+        end
+    elseif IsUsableSpell then
+        local ok, usable = pcall(IsUsableSpell, spellId)
+        if not ok or type(usable) ~= "boolean" then
+            return true
+        end
+        if not usable then
+            return false
+        end
     end
     if isSpellOnCooldown(spellId) then
         return false
@@ -1276,6 +1368,9 @@ local function recommendReasonLabel(reason)
     end
     if reason == "ac_primary" then
         return L("WHY_AC_PRIMARY")
+    end
+    if reason == "ac_lookahead" then
+        return L("WHY_AC_LOOKAHEAD")
     end
     if reason == "ac_candidate" then
         return L("WHY_AC_CANDIDATE")
