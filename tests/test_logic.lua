@@ -177,6 +177,90 @@ check("pick recommended skips blacklisted", Logic.pickRecommendedSpell(7, {8, 9}
 check("pick recommended when filter off", Logic.pickRecommendedSpell(7, {9}, bl, false) == 7)
 check("pick all blacklisted yields nil", Logic.pickRecommendedSpell(7, {7, 9}, bl, true) == nil)
 
+local simcEntries = {
+    {id = 100},
+    {id = 200, gates = {{t = "proc"}}},
+    {id = 300},
+}
+local function gateOk(entry)
+    if type(entry.gates) ~= "table" then
+        return true
+    end
+    for _, g in ipairs(entry.gates) do
+        if g.t == "proc" then
+            return false
+        end
+    end
+    return true
+end
+
+local id, reason = Logic.pickBestRecommendation(50, {300}, simcEntries, {
+    simcAssist = false,
+    blacklistEnabled = false,
+    gateOk = gateOk,
+})
+check("assist mode AC primary", id == 50 and reason == "ac_primary")
+
+id, reason = Logic.pickBestRecommendation(50, {300}, simcEntries, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    gateOk = gateOk,
+})
+-- 300 is in SimC list and in AC pool → ranks above bare primary 50
+check("simc mode ranks AC pool by SimC", id == 300 and reason == "simc_rank")
+
+id, reason = Logic.pickBestRecommendation(50, {}, {{id = 100}}, {
+    simcAssist = true,
+    blacklistEnabled = false,
+})
+check("simc mode keeps sole AC candidate", id == 50 and reason == "ac_primary")
+
+id, reason = Logic.pickBestRecommendation(100, {300}, simcEntries, {
+    simcAssist = true,
+    blacklistEnabled = true,
+    blacklistEntries = {{spellId = 100, enabled = true}},
+    gateOk = gateOk,
+})
+check("blacklist drops primary then SimC", id == 300 and reason == "simc_rank")
+
+id, reason = Logic.pickBestRecommendation(nil, {}, simcEntries, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    gateOk = gateOk,
+})
+-- pool empty without AC → none (SimC alone does not invent outside AC pool)
+check("no AC pool yields none", id == nil and reason == "none")
+
+id, reason = Logic.pickBestRecommendation(200, {100, 300}, simcEntries, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    gateOk = gateOk,
+    isUsable = function(spellId)
+        return spellId ~= 100
+    end,
+})
+check("prefer usable over higher simc unusable", id == 300)
+
+-- gate skips 200; pool is empty of AC so none unless we pass candidates
+id, reason = Logic.pickBestRecommendation(200, {100}, simcEntries, {
+    simcAssist = true,
+    blacklistEnabled = false,
+    gateOk = gateOk,
+})
+check("gate skips proc-gated id in simc pass", id == 100 and reason == "simc_rank")
+
+local fakeData = {
+    specs = {
+        TEST_1 = {
+            st = {{id = 1}, {id = 2}},
+            aoe = {{id = 9}},
+        },
+    },
+}
+check("simc spec table", Logic.getSimcSpecTable(fakeData, "TEST_1") ~= nil)
+check("simc context st", Logic.getSimcContextEntries(fakeData.specs.TEST_1, false)[1].id == 1)
+check("simc context aoe", Logic.getSimcContextEntries(fakeData.specs.TEST_1, true)[1].id == 9)
+
 if failures > 0 then
     print(string.format("%d failure(s)", failures))
     os.exit(1)

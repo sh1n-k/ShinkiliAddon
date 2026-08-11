@@ -7,7 +7,7 @@ local PRIORITY_VISIBLE_ROWS = 6
 local PRIORITY_ROW_HEIGHT = 28
 local GCD_SPELL_ID = 61304
 local OPTIONS_WIDTH = 900
-local OPTIONS_HEIGHT = 720
+local OPTIONS_HEIGHT = 760
 local BLACKLIST_TOGGLE_BUTTON = "ShinkiliBlacklistToggleButton"
 local FRAME_STRATA_LIST = {
     "BACKGROUND",
@@ -62,6 +62,8 @@ local defaults = {
         toggleKey = nil,
         entries = {},
     },
+    -- Rank mode: among AC live candidates, Assist order (false) or SimC order (true).
+    simcAssist = true,
 }
 
 local function L(key)
@@ -132,6 +134,7 @@ local state = {
     activeProcSpellId = nil,
     activeProcColorIndex = nil,
     defenseSpellId = nil,
+    recommendReason = nil,
     optionsOpen = false,
     optionsTab = "main",
     availableSpells = {},
@@ -656,6 +659,10 @@ local function isSpellUsableNow(spellId)
     return false
 end
 
+local getSpellCooldownInfo
+local isSpellOnCooldown
+local isSpellReadyNow
+
 local function isProcActive(spellId)
     if not spellId then
         return false
@@ -756,7 +763,102 @@ local function getBlacklistSettings()
     return settings.blacklist
 end
 
+local function getSimcSpecKey()
+    if not UnitClass then
+        return nil
+    end
+    local _, classFile = UnitClass("player")
+    if not classFile then
+        return nil
+    end
+    local specIndex = GetSpecialization and GetSpecialization() or nil
+    if not specIndex or specIndex < 1 then
+        return nil
+    end
+    return classFile .. "_" .. tostring(specIndex)
+end
+
+local function estimateHostileNameplateCount()
+    local count = 0
+    if C_NamePlate and C_NamePlate.GetNamePlates then
+        local plates = C_NamePlate.GetNamePlates()
+        if type(plates) == "table" then
+            for _, plate in ipairs(plates) do
+                local unit = plate and plate.namePlateUnitToken
+                if unit and UnitCanAttack and UnitCanAttack("player", unit) then
+                    local dead = UnitIsDead and UnitIsDead(unit)
+                    if not dead then
+                        count = count + 1
+                    end
+                end
+            end
+        end
+    end
+    if count == 0 and UnitExists and UnitExists("target") and UnitCanAttack and UnitCanAttack("player", "target") then
+        if not (UnitIsDead and UnitIsDead("target")) then
+            count = 1
+        end
+    end
+    return count
+end
+
+local function evaluateSimcEntryGates(entry)
+    if type(entry) ~= "table" then
+        return true
+    end
+    local gates = entry.gates
+    if type(gates) ~= "table" or #gates == 0 then
+        return true
+    end
+
+    for _, gate in ipairs(gates) do
+        if type(gate) == "table" and gate.t then
+            local gateType = gate.t
+            if gateType == "proc" then
+                if not isProcActive(entry.id) then
+                    return false
+                end
+            elseif gateType == "cd" then
+                -- CD gate: require ready (usable + not on long cooldown).
+                if not isSpellReadyNow(entry.id) then
+                    return false
+                end
+            elseif gateType == "buff" and gate.id then
+                -- Best-effort overlay proxy (secret-safe). Positive buff: fail-open if unknown.
+                -- Negative buff: only block when overlay proves the buff-like state is active.
+                local active = isProcActive(gate.id)
+                if gate.neg and active then
+                    return false
+                end
+            end
+            -- execute / targets / dot / unknown → fail-open
+        end
+    end
+    return true
+end
+
+local function collectAcCandidates(primary)
+    local candidates = {}
+    if C_AssistedCombat and C_AssistedCombat.GetNextCastSpell then
+        local okAlt, alt = pcall(C_AssistedCombat.GetNextCastSpell, true)
+        if okAlt and alt and alt ~= primary then
+            table.insert(candidates, alt)
+        end
+    end
+    if C_AssistedCombat and C_AssistedCombat.GetRotationSpells then
+        local okRot, rotation = pcall(C_AssistedCombat.GetRotationSpells)
+        if okRot and type(rotation) == "table" then
+            for _, spellId in ipairs(rotation) do
+                table.insert(candidates, spellId)
+            end
+        end
+    end
+    return candidates
+end
+
 local function getCurrentRecommendedSpellId()
+    state.recommendReason = nil
+
     if not C_AssistedCombat or not C_AssistedCombat.IsAvailable or not C_AssistedCombat.GetNextCastSpell then
         return nil
     end
@@ -769,28 +871,32 @@ local function getCurrentRecommendedSpellId()
         primary = nil
     end
 
+    -- AC live alts after primary (highlight + rotation). Primary is passed separately.
+    local candidates = collectAcCandidates(primary)
+
     local blacklist = getBlacklistSettings()
-    if not blacklist.enabled then
-        return primary
+    local simcAssist = db().simcAssist ~= false
+
+    local simcEntries = nil
+    if simcAssist and ShinkiliSimcData then
+        local specKey = getSimcSpecKey()
+        local specTable = Logic.getSimcSpecTable(ShinkiliSimcData, specKey)
+        local useAoe = estimateHostileNameplateCount() >= 3
+        simcEntries = Logic.getSimcContextEntries(specTable, useAoe)
     end
 
-    local candidates = {}
-    if C_AssistedCombat.GetNextCastSpell then
-        local okAlt, alt = pcall(C_AssistedCombat.GetNextCastSpell, true)
-        if okAlt and alt and alt ~= primary then
-            table.insert(candidates, alt)
-        end
-    end
-    if C_AssistedCombat.GetRotationSpells then
-        local okRot, rotation = pcall(C_AssistedCombat.GetRotationSpells)
-        if okRot and type(rotation) == "table" then
-            for _, spellId in ipairs(rotation) do
-                table.insert(candidates, spellId)
-            end
-        end
-    end
-
-    return Logic.pickRecommendedSpell(primary, candidates, blacklist.entries, true)
+    local spellId, reason = Logic.pickBestRecommendation(primary, candidates, simcEntries, {
+        blacklistEntries = blacklist.entries,
+        blacklistEnabled = blacklist.enabled == true,
+        simcAssist = simcAssist,
+        gateOk = evaluateSimcEntryGates,
+        -- Soft prefer ready spells only when actively ranking with a SimC list.
+        isUsable = (simcAssist and simcEntries and #simcEntries > 0) and function(id)
+            return isSpellReadyNow(id)
+        end or nil,
+    })
+    state.recommendReason = reason
+    return spellId
 end
 
 local function getCurrentCastState()
@@ -826,7 +932,7 @@ local function getCurrentCastState()
     return nil, nil
 end
 
-local function getSpellCooldownInfo(spellId)
+getSpellCooldownInfo = function(spellId)
     if not spellId then
         return nil
     end
@@ -844,6 +950,35 @@ local function getSpellCooldownInfo(spellId)
     end
 
     return nil
+end
+
+-- True when the spell appears on a meaningful cooldown (not just GCD).
+isSpellOnCooldown = function(spellId)
+    if not spellId then
+        return false
+    end
+    local startTime, duration, enabled = getSpellCooldownInfo(spellId)
+    if enabled == false or enabled == 0 then
+        return true
+    end
+    if not startTime or not duration then
+        return false
+    end
+    if duration <= 1.5 then
+        return false
+    end
+    local now = (GetTime and GetTime()) or 0
+    return (startTime + duration - now) > 0.1
+end
+
+isSpellReadyNow = function(spellId)
+    if not isSpellUsableNow(spellId) then
+        return false
+    end
+    if isSpellOnCooldown(spellId) then
+        return false
+    end
+    return true
 end
 
 local function sanitizeSettings()
@@ -1030,18 +1165,18 @@ showBlacklistToast = function(enabled)
     toastFrame.elapsed = 0
     toastFrame:SetScript("OnUpdate", function(self, elapsed)
         self.elapsed = (self.elapsed or 0) + elapsed
-        if self.elapsed < 0.9 then
+        if self.elapsed < 0.45 then
             self:SetAlpha(1)
             return
         end
-        local fade = self.elapsed - 0.9
-        if fade >= 0.45 then
+        local fade = self.elapsed - 0.45
+        if fade >= 0.225 then
             self:SetScript("OnUpdate", nil)
             self:Hide()
             self:SetAlpha(1)
             return
         end
-        self:SetAlpha(1 - (fade / 0.45))
+        self:SetAlpha(1 - (fade / 0.225))
     end)
 end
 
@@ -1135,6 +1270,28 @@ local function syncEditorSelection()
     state.editorMoveGlow = false
 end
 
+local function recommendReasonLabel(reason)
+    if state.activeProcSpellId then
+        return L("WHY_PROC")
+    end
+    if reason == "ac_primary" then
+        return L("WHY_AC_PRIMARY")
+    end
+    if reason == "ac_candidate" then
+        return L("WHY_AC_CANDIDATE")
+    end
+    if reason == "simc_rank" then
+        return L("WHY_SIMC_RANK")
+    end
+    if reason == "ac_fallback" then
+        return L("WHY_AC_FALLBACK")
+    end
+    if reason == "none" then
+        return L("WHY_NONE")
+    end
+    return nil
+end
+
 local function updateCurrentSpellText()
     if not currentSpellText then
         return
@@ -1144,12 +1301,18 @@ local function updateCurrentSpellText()
     local shown = state.activeProcSpellId or state.currentSpellId
     if shown then
         local text = string.format(L("CURRENT_RECOMMENDATION"), getSpellNameSafe(shown))
-        if state.activeProcSpellId then
-            text = text .. " [Proc]"
+        local why = recommendReasonLabel(state.recommendReason)
+        if why then
+            text = text .. " · " .. why
         end
         table.insert(lines, text)
     else
-        table.insert(lines, string.format(L("CURRENT_RECOMMENDATION"), L("CURRENT_NONE")))
+        local text = string.format(L("CURRENT_RECOMMENDATION"), L("CURRENT_NONE"))
+        local why = recommendReasonLabel(state.recommendReason or "none")
+        if why then
+            text = text .. " · " .. why
+        end
+        table.insert(lines, text)
     end
 
     if state.previewSpellId and state.previewColorIndex then
@@ -1828,6 +1991,24 @@ local function refreshAllEditorViews()
             UIDropDownMenu_SetSelectedValue(main.mainStrataDropdown, strata)
             UIDropDownMenu_SetText(main.mainStrataDropdown, strata)
         end
+        if main.simcAssistCheck then
+            main.simcAssistCheck:SetChecked(db().simcAssist ~= false)
+        end
+        if main.simcStatus then
+            local key = getSimcSpecKey()
+            local has = key and ShinkiliSimcData and Logic.getSimcSpecTable(ShinkiliSimcData, key)
+            if has then
+                main.simcStatus:SetText(string.format(L("SIMC_STATUS_OK"), key))
+            else
+                main.simcStatus:SetText(L("SIMC_STATUS_MISSING"))
+            end
+        end
+        if main.simcAssistCheck and main.simcAssistCheck.text then
+            main.simcAssistCheck.text:SetText(L("SIMC_ASSIST"))
+        end
+        if main.simcHint then
+            main.simcHint:SetText(L("SIMC_ASSIST_HINT"))
+        end
     end
     if updateDefenseRows then
         updateDefenseRows()
@@ -1874,6 +2055,7 @@ local function resetToDefaults()
         toggleKey = nil,
         entries = {},
     }
+    settings.simcAssist = defaults.simcAssist
     settings.cooldownBox = nil
 
     state.editorSpellId = nil
@@ -1958,8 +2140,39 @@ local function createMainOptionsPanel(frame)
     currentSpellText:SetWordWrap(false)
     currentSpellText:SetText(string.format(L("CURRENT_RECOMMENDATION"), L("CURRENT_NONE")))
 
+    local simcCheck = CreateFrame("CheckButton", addonName .. "SimcAssist", frame, "UICheckButtonTemplate")
+    simcCheck:SetPoint("TOPLEFT", currentSpellText, "BOTTOMLEFT", 0, -4)
+    simcCheck.text:SetText(L("SIMC_ASSIST"))
+    simcCheck:SetScript("OnClick", function(self)
+        db().simcAssist = self:GetChecked() and true or false
+        updateSpellState()
+        if frame.simcStatus then
+            local key = getSimcSpecKey()
+            local has = key and ShinkiliSimcData and Logic.getSimcSpecTable(ShinkiliSimcData, key)
+            if has then
+                frame.simcStatus:SetText(string.format(L("SIMC_STATUS_OK"), key))
+            else
+                frame.simcStatus:SetText(L("SIMC_STATUS_MISSING"))
+            end
+        end
+    end)
+    frame.simcAssistCheck = simcCheck
+
+    local simcStatus = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    simcStatus:SetPoint("TOPLEFT", simcCheck, "BOTTOMLEFT", 28, -2)
+    simcStatus:SetWidth(contentWidth - 28)
+    simcStatus:SetJustifyH("LEFT")
+    frame.simcStatus = simcStatus
+
+    local simcHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    simcHint:SetPoint("TOPLEFT", simcStatus, "BOTTOMLEFT", 0, -2)
+    simcHint:SetWidth(contentWidth - 28)
+    simcHint:SetJustifyH("LEFT")
+    simcHint:SetText(L("SIMC_ASSIST_HINT"))
+    frame.simcHint = simcHint
+
     local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    editorLabel:SetPoint("TOPLEFT", currentSpellText, "BOTTOMLEFT", 0, -8)
+    editorLabel:SetPoint("TOPLEFT", simcHint, "BOTTOMLEFT", -28, -8)
     editorLabel:SetText(L("QUICK_EDITOR"))
     frame.editorLabel = editorLabel
 
@@ -3695,6 +3908,9 @@ local function initialize()
         toggleKey = nil,
         entries = {},
     }
+    if ShinkiliDB.simcAssist == nil then
+        ShinkiliDB.simcAssist = defaults.simcAssist
+    end
     ShinkiliDB.cooldownBox = nil
 
     refreshAvailableSpells()
@@ -3717,29 +3933,33 @@ local function initialize()
 
     if C_Timer and C_Timer.NewTicker then
         C_Timer.NewTicker(0.05, function()
-            if db() then
-                local previousSpellId = state.currentSpellId
-                local previousCastState = state.currentCastState
-                local previousCastSpellId = state.currentCastSpellId
-                local nextSpellId = getCurrentRecommendedSpellId()
-                local nextCastState, nextCastSpellId = getCurrentCastState()
-                if nextSpellId ~= previousSpellId or nextCastState ~= previousCastState or nextCastSpellId ~= previousCastSpellId then
-                    if nextSpellId and nextSpellId ~= previousSpellId then
-                        rememberRecommendedSpell(nextSpellId)
-                    end
-                    state.currentSpellId = nextSpellId
-                    state.currentCastState = nextCastState
-                    state.currentCastSpellId = nextCastSpellId
-                    refreshVisibility()
-                    if state.optionsOpen then
-                        updateEditorControls()
-                        updateMappingRows()
-                    end
-                elseif state.optionsOpen then
-                    updateCurrentSpellText()
-                end
-                updateCooldownSpiral()
+            if not db() then
+                return
             end
+            local previousSpellId = state.currentSpellId
+            local previousCastState = state.currentCastState
+            local previousCastSpellId = state.currentCastSpellId
+            local previousProc = state.activeProcSpellId
+            local previousDefense = state.defenseSpellId
+            local previousReason = state.recommendReason
+
+            updateSpellState()
+
+            local changed = state.currentSpellId ~= previousSpellId
+                or state.currentCastState ~= previousCastState
+                or state.currentCastSpellId ~= previousCastSpellId
+                or state.activeProcSpellId ~= previousProc
+                or state.defenseSpellId ~= previousDefense
+                or state.recommendReason ~= previousReason
+
+            if changed and state.optionsOpen then
+                updateEditorControls()
+                updateMappingRows()
+            elseif state.optionsOpen then
+                updateCurrentSpellText()
+            end
+            -- spiral already refreshed inside refreshVisibility via updateSpellState
+            updateCooldownSpiral()
         end)
     end
 end

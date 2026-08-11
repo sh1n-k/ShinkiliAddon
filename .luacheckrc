@@ -6,11 +6,23 @@ globals = {
     "BlizzShinDB",
     "ShinkiliLogic",
     "ShinkiliLocale",
+    "ShinkiliSimcData",
     "SLASH_SHINKILI1",
     "SLASH_SHINKILI2",
     SlashCmdList = {
         fields = {
             SHINKILI = {},
+        },
+    },
+}
+
+files["Shinkili/ShinkiliSimcData.lua"] = {
+    globals = {
+        ShinkiliSimcData = {
+            fields = {
+                version = {},
+                specs = {other_fields = true},
+            },
         },
     },
 }
@@ -28,9 +40,18 @@ read_globals = {
     "IsShiftKeyDown",
     "ClearOverrideBindings",
     "SetOverrideBindingClick",
+    "UnitClass",
+    "GetSpecialization",
+    "UnitCanAttack",
+    "UnitIsDead",
+    "UnitExists",
+    "GetTime",
+    "GetSpellCooldown",
+    "C_NamePlate",
     "C_SpellActivationOverlay",
     "C_AssistedCombat",
     "ShinkiliLocale",
+    "ShinkiliSimcData",
     "C_Spell",
     "C_SpellBook",
     "C_Timer",

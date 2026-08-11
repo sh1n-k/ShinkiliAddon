@@ -9,8 +9,10 @@
 |------|------|
 | `Shinkili/Shinkili.toc` | Load order, interface versions, SavedVariables |
 | `Shinkili/ShinkiliLocale.lua` | en/ko UI strings (`ShinkiliLocale`) |
-| `Shinkili/ShinkiliLogic.lua` | Pure domain (no WoW API): sanitize, priority lists, helpers |
+| `Shinkili/ShinkiliLogic.lua` | Pure domain (no WoW API): sanitize, priority lists, hybrid pick |
+| `Shinkili/ShinkiliSimcData.lua` | Bundled SimC-derived priority tables (generated) |
 | `Shinkili/Shinkili.lua` | Runtime UI, options tabs, indicators, slash, minimap |
+| `tools/gen_simc_priority.py` | Regenerates `ShinkiliSimcData.lua` from JustAC/SimC source |
 | `tests/test_logic.lua` | Unit tests for `ShinkiliLogic` |
 | `scripts/run_tests.sh` | Runs unit tests |
 | `scripts/sync_to_wow.sh` | Copies addon into local WoW AddOns |
@@ -20,7 +22,8 @@
 - Important keys: `mappings`, `overrides`, `defense` (entries + box placement), `procs.entries`, `locale` (`en`/`ko`), minimap fields, main indicator placement.
 
 ## Runtime model
-- **Main box**: AC recommendation (with optional **blacklist** skip to next candidate) → mapping color; active **proc** overrides spell/color; cast/channel/empower overrides when not on proc/preview.
+- **Main box (best single pick)**: pool = AC live candidates → filter blacklist → rank Assist-order or **SimC-order among pool** → prefer usable → color; **proc** display override still wins on top.
+- **SimC rank mode**: AC supplies candidates only; SimC list orders them (ST/AOE + secret-safe gates). Off = pure Assist order.
 - **Defense box**: separate frame; highest-priority **usable** defense entry color.
 - **Layers**: per-box `frameStrata` + `frameLevel` (options on Main / Defense).
 - **Blacklist**: tab + filter toggle; capture keybind (key/mouse/wheel) via override binding; center toast on toggle.

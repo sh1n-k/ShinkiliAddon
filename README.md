@@ -4,8 +4,11 @@ WoW retail addon: turns Blizzard Assisted Combat recommendations into configurab
 
 ## Features
 - Map recommended spells to colors (main box)
+- **Rank mode**: AC supplies live candidates; optional SimC order ranks them for the single best color signal
 - Defense tab: separate priority color box for usable defensive skills
 - Procs tab: active spell overlays override the main box
+- Blacklist tab with keybind toggle + center toast
+- Frame layer (strata/level) for main and defense boxes
 - English / Korean UI language (saved)
 - Minimap button and `/sk` for settings
 
@@ -15,7 +18,9 @@ Shinkili/
   Shinkili.toc
   ShinkiliLocale.lua   # en/ko strings
   ShinkiliLogic.lua    # pure domain (tested)
+  ShinkiliSimcData.lua # SimC-derived priority tables (generated)
   Shinkili.lua         # UI + runtime
+tools/gen_simc_priority.py
 tests/test_logic.lua
 scripts/run_tests.sh
 scripts/sync_to_wow.sh
