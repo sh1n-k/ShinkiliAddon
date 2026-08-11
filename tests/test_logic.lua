@@ -109,6 +109,47 @@ Logic.sanitizeSettings(legacy, {
 check("legacy tracked migrated count", #legacy.mappings == 2)
 check("legacy color for 42", legacy.mappings[1].spellId == 42 and legacy.mappings[1].colorIndex == 4)
 
+local priority = Logic.sanitizePriorityEntries({
+    {spellId = 10, colorIndex = 3, enabled = true},
+    {spellId = 10, colorIndex = 4},
+    {spellId = 11, colorIndex = 1}, -- invalid color -> 2
+    {spellId = -3},
+}, 27)
+check("priority unique spells", #priority == 2)
+check("priority color repaired", priority[2].colorIndex == 2)
+check("priority pick first active", Logic.pickPriorityEntry(priority, {[11] = true}).spellId == 11)
+Logic.movePriorityEntry(priority, 2, -1)
+check("priority move up", priority[1].spellId == 11)
+
+local withExtras = {
+    size = 64,
+    mappings = {},
+    overrides = {},
+    locale = "koKR",
+    defense = {
+        entries = {{spellId = 55, colorIndex = 5, enabled = false}},
+    },
+    procs = {
+        entries = {{spellId = 66, colorIndex = 99}},
+    },
+}
+Logic.sanitizeSettings(withExtras, {
+    sizeDefault = 64,
+    xDefault = 0,
+    yDefault = -120,
+    pointDefault = "CENTER",
+    relativePointDefault = "CENTER",
+    legacyMappingSlots = 0,
+    colorPaletteSize = 27,
+    markerPaletteSize = 8,
+    reservedOverrideSize = 6,
+    defaultOverrides = defaultOverrides,
+    defenseDefaults = {size = 48, x = 100, y = -120, point = "CENTER", relativePoint = "CENTER"},
+})
+check("locale normalized", withExtras.locale == "ko")
+check("defense entry kept", #withExtras.defense.entries == 1 and withExtras.defense.entries[1].enabled == false)
+check("proc color clamped", withExtras.procs.entries[1].colorIndex == 2)
+
 if failures > 0 then
     print(string.format("%d failure(s)", failures))
     os.exit(1)

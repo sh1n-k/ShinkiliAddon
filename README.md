@@ -20,16 +20,16 @@
 ## 주요 기능 Features
 
 - 추천 주문을 사용자 지정 색상에 매핑합니다.
-- 미리 여러 빈 슬롯을 두지 않고 검색 중심 편집 흐름을 제공합니다.
-- 저장된 주문별로 보조 마커, GCD spiral, 선택적 `Move Glow`를 표시할 수 있습니다.
-- 캐스팅, 채널링, 강화 상태용 예약색 오버라이드를 지원합니다.
-- 메인 인디케이터의 크기와 위치를 조정할 수 있습니다.
+- 방어 탭: 사용 가능한 방어 스킬을 우선순위로 별도 색 박스에 표시합니다.
+- 프록 탭: 활성 프록을 메인 박스 최우선으로 표시합니다.
+- 영어/한국어 UI 언어를 저장합니다.
+- 미니맵 버튼으로 설정에 접근할 수 있습니다.
 
 - Maps recommended spells to user-selected colors.
-- Uses a search-first editing flow instead of preallocated empty slots.
-- Supports a helper marker, GCD spiral, and optional move glow per saved spell.
-- Supports reserved color overrides for casting, channeling, and empower states.
-- Includes size and position controls for the main indicator.
+- Defense tab: separate priority color box for usable defensive skills.
+- Procs tab: active procs override the main box display.
+- English/Korean UI language is persisted.
+- Minimap button opens settings.
 
 <a id="project-structure"></a>
 ## 프로젝트 구조 Project Structure

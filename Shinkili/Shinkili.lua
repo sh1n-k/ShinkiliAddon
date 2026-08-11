@@ -1,13 +1,19 @@
 local addonName = ...
 
 local LEGACY_MAPPING_SLOTS = 12
-local VISIBLE_MAPPING_ROWS = 7
-local MAPPING_ROW_HEIGHT = 32
+local VISIBLE_MAPPING_ROWS = 6
+local MAPPING_ROW_HEIGHT = 30
+local PRIORITY_VISIBLE_ROWS = 6
+local PRIORITY_ROW_HEIGHT = 30
 local GCD_SPELL_ID = 61304
+local OPTIONS_WIDTH = 820
+local OPTIONS_HEIGHT = 640
 
 local Logic = ShinkiliLogic
+local Locale = ShinkiliLocale
 
 local defaults = {
+    locale = "en",
     locked = true,
     size = 64,
     point = "CENTER",
@@ -23,7 +29,31 @@ local defaults = {
         empower = {enabled = true, colorIndex = 3},
     },
     mappings = {},
+    defense = {
+        enabled = true,
+        locked = true,
+        size = 48,
+        point = "CENTER",
+        relativePoint = "CENTER",
+        x = 100,
+        y = -120,
+        entries = {},
+    },
+    procs = {
+        entries = {},
+    },
 }
+
+local function L(key)
+    local code = defaults.locale
+    if ShinkiliDB and type(ShinkiliDB.locale) == "string" then
+        code = ShinkiliDB.locale
+    end
+    if Locale and Locale.get then
+        return Locale.get(code, key)
+    end
+    return key
+end
 
 local COLOR_PALETTE = {
     {name = "Unassigned"},
@@ -79,7 +109,10 @@ local state = {
     currentSpellId = nil,
     currentCastState = nil,
     currentCastSpellId = nil,
+    activeProcSpellId = nil,
+    defenseSpellId = nil,
     optionsOpen = false,
+    optionsTab = "main",
     availableSpells = {},
     searchText = "",
     editorSpellId = nil,
@@ -91,6 +124,10 @@ local state = {
     previewMoveGlow = nil,
     recentCounter = 0,
     recentSpellRanks = {},
+    defenseEditorSpellId = nil,
+    defenseEditorColorIndex = 2,
+    procEditorSpellId = nil,
+    procEditorColorIndex = 2,
 }
 
 local addon = CreateFrame("Frame")
@@ -182,7 +219,31 @@ label:SetTextColor(0.96, 0.94, 0.86, 1)
 label:SetShadowOffset(1, -1)
 label:SetShadowColor(0, 0, 0, 0.9)
 
+local defenseBox = CreateFrame("Frame", "ShinkiliDefenseBox", UIParent, "BackdropTemplate")
+defenseBox:SetMovable(true)
+defenseBox:SetClampedToScreen(true)
+defenseBox:EnableMouse(false)
+defenseBox:RegisterForDrag("LeftButton")
+defenseBox:SetFrameStrata("FULLSCREEN_DIALOG")
+defenseBox:SetFrameLevel(190)
+defenseBox:SetBackdrop({
+    bgFile = "Interface/Buttons/WHITE8X8",
+    edgeFile = "Interface/Buttons/WHITE8X8",
+    edgeSize = 2,
+})
+defenseBox:SetBackdropColor(0.2, 0.2, 0.2, 1)
+defenseBox:SetBackdropBorderColor(0.05, 0.05, 0.05, 0.95)
+defenseBox:Hide()
+
+local defenseLabel = defenseBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+defenseLabel:SetPoint("BOTTOM", defenseBox, "TOP", 0, 4)
+defenseLabel:SetTextColor(0.96, 0.94, 0.86, 1)
+defenseLabel:SetShadowOffset(1, -1)
+defenseLabel:SetShadowColor(0, 0, 0, 0.9)
+
 local options
+local optionsTabs = {}
+local optionsPanels = {}
 local minimapButton
 local minimapSizeHooked = false
 local currentSpellText
@@ -205,13 +266,24 @@ local empowerOverrideDropdown
 local mappingScrollFrame
 local emptyMappingsText
 local mappingRows = {}
+local defenseRows = {}
+local defenseScrollFrame
+local emptyDefenseText
+local procRows = {}
+local procScrollFrame
+local emptyProcText
 local optionsLayout
 local controlId = 0
 local updateEditorControls
 local updateMappingRows
+local updateDefenseRows
+local updateProcRows
 local syncPlacementControls
 local updateCooldownSpiral
 local refreshMinimapButton
+local refreshDefenseBox
+local selectOptionsTab
+local refreshOptionsLocale
 
 local function db()
     return ShinkiliDB
@@ -237,6 +309,7 @@ local function sanitizeConfig()
         markerPaletteSize = #MARKER_PALETTE,
         reservedOverrideSize = #RESERVED_OVERRIDE_PALETTE,
         defaultOverrides = defaults.overrides,
+        defenseDefaults = defaults.defense,
     }
 end
 
@@ -504,9 +577,92 @@ local function togglePreview(spellId, colorIndex, markerIndex, moveGlow)
     end
 end
 
+local function isSpellUsableNow(spellId)
+    if not spellId then
+        return false
+    end
+
+    if C_Spell and C_Spell.IsSpellUsable then
+        local ok, usable = pcall(C_Spell.IsSpellUsable, spellId)
+        if ok then
+            return usable and true or false
+        end
+    end
+
+    if IsUsableSpell then
+        local ok, usable = pcall(IsUsableSpell, spellId)
+        if ok then
+            return usable and true or false
+        end
+    end
+
+    return false
+end
+
+local function isProcActive(spellId)
+    if not spellId then
+        return false
+    end
+
+    if IsSpellOverlayed then
+        local ok, active = pcall(IsSpellOverlayed, spellId)
+        if ok and active then
+            return true
+        end
+    end
+
+    if C_SpellActivationOverlay and C_SpellActivationOverlay.IsSpellOverlayed then
+        local ok, active = pcall(C_SpellActivationOverlay.IsSpellOverlayed, spellId)
+        if ok and active then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function getActiveProcEntry()
+    local entries = db().procs and db().procs.entries
+    if type(entries) ~= "table" then
+        return nil
+    end
+
+    local activeSet = {}
+    for _, entry in ipairs(entries) do
+        if entry.enabled ~= false and entry.spellId and isProcActive(entry.spellId) then
+            activeSet[entry.spellId] = true
+        end
+    end
+
+    return Logic.pickPriorityEntry(entries, activeSet)
+end
+
+local function getActiveDefenseEntry()
+    local defense = db().defense
+    if not defense or defense.enabled == false then
+        return nil
+    end
+    local entries = defense.entries
+    if type(entries) ~= "table" then
+        return nil
+    end
+
+    local activeSet = {}
+    for _, entry in ipairs(entries) do
+        if entry.enabled ~= false and entry.spellId and isSpellUsableNow(entry.spellId) then
+            activeSet[entry.spellId] = true
+        end
+    end
+
+    return Logic.pickPriorityEntry(entries, activeSet)
+end
+
 local function getDisplayedSpellId()
     if state.previewSpellId then
         return state.previewSpellId
+    end
+    if state.activeProcSpellId then
+        return state.activeProcSpellId
     end
     return state.currentSpellId
 end
@@ -515,6 +671,20 @@ local function getDisplayedColorIndex()
     if state.previewColorIndex then
         return state.previewColorIndex
     end
+    if state.activeProcSpellId then
+        local entry = getActiveProcEntry()
+        if entry and entry.spellId == state.activeProcSpellId then
+            return entry.colorIndex
+        end
+        local entries = db().procs and db().procs.entries
+        if type(entries) == "table" then
+            for _, procEntry in ipairs(entries) do
+                if procEntry.spellId == state.activeProcSpellId then
+                    return procEntry.colorIndex
+                end
+            end
+        end
+    end
     return getAssignedColorIndex(state.currentSpellId)
 end
 
@@ -522,12 +692,18 @@ local function getDisplayedMarkerIndex()
     if state.previewMarkerIndex then
         return state.previewMarkerIndex
     end
+    if state.activeProcSpellId then
+        return getAssignedMarkerIndex(state.activeProcSpellId) or 1
+    end
     return getAssignedMarkerIndex(state.currentSpellId)
 end
 
 local function getDisplayedMoveGlowEnabled()
     if state.previewSpellId then
         return state.previewMoveGlow == true
+    end
+    if state.activeProcSpellId then
+        return getAssignedMoveGlowEnabled(state.activeProcSpellId)
     end
     return getAssignedMoveGlowEnabled(state.currentSpellId)
 end
@@ -612,6 +788,72 @@ local function applySize()
     moveGlowInner:SetSize(db().size + 6, db().size + 6)
 end
 
+local function applyDefensePosition()
+    local defense = db().defense
+    if not defense then
+        return
+    end
+    defenseBox:ClearAllPoints()
+    defenseBox:SetPoint(defense.point or "CENTER", UIParent, defense.relativePoint or "CENTER", defense.x or 100, defense.y or -120)
+end
+
+local function applyDefenseSize()
+    local defense = db().defense
+    local size = defense and defense.size or defaults.defense.size
+    defenseBox:SetSize(size, size)
+end
+
+local function onDefenseDragStop(self)
+    self:StopMovingOrSizing()
+    local _, _, _, x, y = self:GetPoint(1)
+    local defense = db().defense
+    defense.point = "CENTER"
+    defense.relativePoint = "CENTER"
+    defense.x = math.floor((x or 0) + 0.5)
+    defense.y = math.floor((y or 0) + 0.5)
+    applyDefensePosition()
+end
+
+defenseBox:SetScript("OnDragStart", function(self)
+    if db().defense and not db().defense.locked then
+        self:StartMoving()
+    end
+end)
+defenseBox:SetScript("OnDragStop", onDefenseDragStop)
+
+refreshDefenseBox = function()
+    local defense = db().defense
+    local entry = getActiveDefenseEntry()
+    state.defenseSpellId = entry and entry.spellId or nil
+
+    local showForEdit = state.optionsOpen and defense and defense.enabled ~= false and defense.locked == false
+    if not defense or defense.enabled == false then
+        defenseBox:Hide()
+        return
+    end
+
+    applyDefenseSize()
+    applyDefensePosition()
+
+    if entry then
+        defenseBox:Show()
+        defenseBox:SetBackdropColor(getPaletteColor(entry.colorIndex))
+        defenseBox:SetAlpha(1)
+        defenseLabel:SetText(getSpellNameSafe(entry.spellId))
+        defenseLabel:Show()
+    elseif showForEdit or (state.optionsOpen and defense.enabled ~= false) then
+        defenseBox:Show()
+        defenseBox:SetBackdropColor(0.25, 0.25, 0.25, 0.55)
+        defenseBox:SetAlpha(1)
+        defenseLabel:SetText(L("DEFENSE_BOX_LABEL"))
+        defenseLabel:Show()
+    else
+        defenseBox:Hide()
+    end
+
+    defenseBox:EnableMouse(defense.locked == false)
+end
+
 function syncPlacementControls()
     if not sizeInput or not xInput or not yInput then
         return
@@ -643,16 +885,21 @@ local function updateCurrentSpellText()
     end
 
     local lines = {}
-
-    if state.currentSpellId then
-        table.insert(lines, "Current recommendation: " .. getSpellNameSafe(state.currentSpellId))
+    local shown = state.activeProcSpellId or state.currentSpellId
+    if shown then
+        local text = string.format(L("CURRENT_RECOMMENDATION"), getSpellNameSafe(shown))
+        if state.activeProcSpellId then
+            text = text .. " [Proc]"
+        end
+        table.insert(lines, text)
     else
-        table.insert(lines, "Current recommendation: None")
+        table.insert(lines, string.format(L("CURRENT_RECOMMENDATION"), L("CURRENT_NONE")))
     end
 
     if state.previewSpellId and state.previewColorIndex then
         local markerName = state.previewMarkerIndex and getMarkerName(state.previewMarkerIndex) or "Auto"
-        local previewLine = "Preview: " .. getSpellNameSafe(state.previewSpellId) .. " / " .. getColorName(state.previewColorIndex) .. " + " .. markerName .. " dot"
+        local previewLine = string.format(L("PREVIEW_SPELL"), getSpellNameSafe(state.previewSpellId))
+            .. " / " .. getColorName(state.previewColorIndex) .. " + " .. markerName
         if state.previewMoveGlow then
             previewLine = previewLine .. " / Move Glow"
         end
@@ -715,20 +962,20 @@ local function refreshPrimaryVisibility()
     end
 
     if displayedSpellId and displayedColorIndex ~= nil then
-        if overrideColorIndex then
+        if overrideColorIndex and not state.activeProcSpellId and not state.previewSpellId then
             square:SetBackdropColor(getReservedColor(overrideColorIndex))
         else
             square:SetBackdropColor(getPaletteColor(displayedColorIndex))
         end
         square:SetAlpha(1)
         if settings.showMarker then
-            markerDot:SetBackdropColor(getMarkerColor(displayedMarkerIndex))
+            markerDot:SetBackdropColor(getMarkerColor(displayedMarkerIndex or 1))
             markerDot:Show()
         else
             markerDot:Hide()
         end
         if state.previewSpellId then
-            label:SetText("Preview: " .. getSpellNameSafe(displayedSpellId))
+            label:SetText(string.format(L("PREVIEW_SPELL"), getSpellNameSafe(displayedSpellId)))
         else
             label:SetText(getSpellNameSafe(displayedSpellId))
         end
@@ -736,7 +983,7 @@ local function refreshPrimaryVisibility()
         square:SetBackdropColor(0.2, 0.2, 0.2, 1)
         square:SetAlpha(1)
         markerDot:Hide()
-        label:SetText("Unassigned: " .. getSpellNameSafe(displayedSpellId))
+        label:SetText(string.format(L("UNASSIGNED_SPELL"), getSpellNameSafe(displayedSpellId)))
     elseif optionsPreview then
         square:SetBackdropColor(getPaletteColor(2))
         square:SetAlpha(1)
@@ -747,15 +994,15 @@ local function refreshPrimaryVisibility()
             markerDot:Hide()
         end
         if state.currentSpellId then
-            label:SetText("Preview: " .. getSpellNameSafe(state.currentSpellId))
+            label:SetText(string.format(L("PREVIEW_SPELL"), getSpellNameSafe(state.currentSpellId)))
         else
-            label:SetText("PREVIEW")
+            label:SetText(L("PREVIEW_LABEL"))
         end
     else
         square:SetBackdropColor(0.25, 0.25, 0.25, 0.45)
         square:SetAlpha(unlockedPreview and 1 or 0)
         markerDot:Hide()
-        label:SetText("MOVE")
+        label:SetText(L("MOVE_LABEL"))
     end
 
     if showSquare and displayedSpellId and displayedMoveGlow then
@@ -774,6 +1021,7 @@ end
 
 local function refreshVisibility()
     refreshPrimaryVisibility()
+    refreshDefenseBox()
     updateCurrentSpellText()
 end
 
@@ -784,6 +1032,10 @@ local function updateSpellState()
         rememberRecommendedSpell(nextSpellId)
     end
     state.currentSpellId = nextSpellId
+
+    local procEntry = getActiveProcEntry()
+    state.activeProcSpellId = procEntry and procEntry.spellId or nil
+
     refreshVisibility()
 end
 
@@ -1046,9 +1298,9 @@ function updateEditorControls()
 
     if lockToggleButton then
         if db().locked then
-            lockToggleButton:SetText("Unlock")
+            lockToggleButton:SetText(L("UNLOCK"))
         else
-            lockToggleButton:SetText("Lock")
+            lockToggleButton:SetText(L("LOCK"))
         end
     end
 
@@ -1308,10 +1560,17 @@ local function refreshAllEditorViews()
     syncPlacementControls()
     updateEditorControls()
     updateMappingRows()
+    if updateDefenseRows then
+        updateDefenseRows()
+    end
+    if updateProcRows then
+        updateProcRows()
+    end
 end
 
 local function resetToDefaults()
     local settings = db()
+    settings.locale = defaults.locale
     settings.point = defaults.point
     settings.relativePoint = defaults.relativePoint
     settings.x = defaults.x
@@ -1323,11 +1582,26 @@ local function resetToDefaults()
     settings.minimapAngle = defaults.minimapAngle
     settings.overrides = copyDefaultOverrides()
     settings.mappings = {}
+    settings.defense = {
+        enabled = defaults.defense.enabled,
+        locked = defaults.defense.locked,
+        size = defaults.defense.size,
+        point = defaults.defense.point,
+        relativePoint = defaults.defense.relativePoint,
+        x = defaults.defense.x,
+        y = defaults.defense.y,
+        entries = {},
+    }
+    settings.procs = {entries = {}}
     settings.cooldownBox = nil
 
     state.editorSpellId = nil
     state.editorColorIndex = nil
     state.editorMoveGlow = false
+    state.defenseEditorSpellId = nil
+    state.defenseEditorColorIndex = 2
+    state.procEditorSpellId = nil
+    state.procEditorColorIndex = 2
     state.searchText = ""
     setPreview(nil)
 
@@ -1337,23 +1611,28 @@ local function resetToDefaults()
 
     applySize()
     applyPosition()
+    applyDefenseSize()
+    applyDefensePosition()
     sanitizeSettings()
     updateSpellState()
     refreshAllEditorViews()
+    if refreshOptionsLocale then
+        refreshOptionsLocale()
+    end
     refreshVisibility()
     refreshMinimapButton()
 end
 
 local function createMainOptionsPanel(frame)
-    local contentWidth = frame:GetWidth() - 36
-    local listWidth = contentWidth - 30
-    local spellTextWidth = 360
-    local colorTextWidth = 170
-    local previewButtonWidth = 68
-    local deleteButtonWidth = 68
+    local contentWidth = frame:GetWidth() - 24
+    local listWidth = contentWidth - 20
+    local spellTextWidth = 300
+    local colorTextWidth = 150
+    local previewButtonWidth = 64
+    local deleteButtonWidth = 64
     local deleteButtonLeft = listWidth - deleteButtonWidth - 8
-    local previewButtonLeft = deleteButtonLeft - previewButtonWidth - 10
-    local glowLeft = previewButtonLeft - 44
+    local previewButtonLeft = deleteButtonLeft - previewButtonWidth - 8
+    local glowLeft = previewButtonLeft - 40
 
     optionsLayout = {
         listWidth = listWidth,
@@ -1364,45 +1643,48 @@ local function createMainOptionsPanel(frame)
         deleteButtonLeft = deleteButtonLeft,
         previewButtonWidth = previewButtonWidth,
         deleteButtonWidth = deleteButtonWidth,
-        colorHeaderX = 404,
-        glowHeaderX = glowLeft + 6,
-        showHeaderX = previewButtonLeft + 10,
-        deleteHeaderX = deleteButtonLeft + 6,
+        colorHeaderX = 340,
+        glowHeaderX = glowLeft + 4,
+        showHeaderX = previewButtonLeft + 8,
+        deleteHeaderX = deleteButtonLeft + 4,
     }
 
     local leftTitle = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    leftTitle:SetPoint("TOPLEFT", 18, -34)
-    leftTitle:SetText("Main Highlight")
+    leftTitle:SetPoint("TOPLEFT", 8, -8)
+    leftTitle:SetText(L("MAIN_TITLE"))
+    frame.mainTitle = leftTitle
 
     local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     subtitle:SetPoint("TOPLEFT", leftTitle, "BOTTOMLEFT", 0, -4)
     subtitle:SetWidth(contentWidth)
     subtitle:SetJustifyH("LEFT")
-    subtitle:SetText("Blizzard Assisted Combat recommendation is shown here. Search current-spec spells and manage only the mappings you save.")
+    subtitle:SetText(L("MAIN_SUBTITLE"))
+    frame.mainSubtitle = subtitle
 
     currentSpellText = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    currentSpellText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -10)
+    currentSpellText:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
     currentSpellText:SetWidth(contentWidth)
     currentSpellText:SetHeight(24)
     currentSpellText:SetJustifyH("LEFT")
     currentSpellText:SetWordWrap(false)
-    currentSpellText:SetText("Current recommendation: None")
+    currentSpellText:SetText(string.format(L("CURRENT_RECOMMENDATION"), L("CURRENT_NONE")))
 
     local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    editorLabel:SetPoint("TOPLEFT", currentSpellText, "BOTTOMLEFT", 0, -12)
-    editorLabel:SetText("Quick Editor")
+    editorLabel:SetPoint("TOPLEFT", currentSpellText, "BOTTOMLEFT", 0, -10)
+    editorLabel:SetText(L("QUICK_EDITOR"))
+    frame.editorLabel = editorLabel
 
     local editorRow = CreateFrame("Frame", nil, frame)
     editorRow:SetSize(contentWidth, 44)
-    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -8)
+    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -6)
 
-    local searchHolder = createSearchInput(editorRow, 130)
+    local searchHolder = createSearchInput(editorRow, 110)
     searchHolder:SetPoint("LEFT", 0, -2)
     searchInput = searchHolder.input
 
     editorSpellDropdown = CreateFrame("Frame", addonName .. "EditorSpellDropdown", editorRow, "UIDropDownMenuTemplate")
     editorSpellDropdown:SetPoint("LEFT", searchHolder, "RIGHT", -10, -8)
-    UIDropDownMenu_SetWidth(editorSpellDropdown, 320)
+    UIDropDownMenu_SetWidth(editorSpellDropdown, 260)
     UIDropDownMenu_JustifyText(editorSpellDropdown, "LEFT")
     initializeSpellDropdown(editorSpellDropdown)
 
@@ -1415,7 +1697,7 @@ local function createMainOptionsPanel(frame)
     editorActionButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
     editorActionButton:SetSize(76, 22)
     editorActionButton:SetPoint("LEFT", editorColorDropdown, "RIGHT", -2, 0)
-    editorActionButton:SetText("Add")
+    editorActionButton:SetText(L("ADD"))
     editorActionButton:SetScript("OnClick", function()
         saveEditorMapping()
         updateEditorControls()
@@ -1426,7 +1708,7 @@ local function createMainOptionsPanel(frame)
     editorPreviewButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
     editorPreviewButton:SetSize(76, 22)
     editorPreviewButton:SetPoint("LEFT", editorActionButton, "RIGHT", 8, 0)
-    editorPreviewButton:SetText("Show")
+    editorPreviewButton:SetText(L("SHOW"))
     editorPreviewButton:SetScript("OnClick", function()
         local spellId, colorIndex, markerIndex, moveGlow = getEditorPreviewState()
         if not spellId or not colorIndex then
@@ -1442,11 +1724,13 @@ local function createMainOptionsPanel(frame)
     searchHint:SetPoint("TOPLEFT", editorRow, "BOTTOMLEFT", 0, -4)
     searchHint:SetWidth(contentWidth)
     searchHint:SetJustifyH("LEFT")
-    searchHint:SetText("Search filters the selector and the saved list. Current spec only, with current/recent recommendations shown first.")
+    searchHint:SetText(L("SEARCH_HINT"))
+    frame.searchHint = searchHint
 
     local listLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    listLabel:SetPoint("TOPLEFT", searchHint, "BOTTOMLEFT", 0, -12)
-    listLabel:SetText("Saved Mappings")
+    listLabel:SetPoint("TOPLEFT", searchHint, "BOTTOMLEFT", 0, -10)
+    listLabel:SetText(L("SAVED_MAPPINGS"))
+    frame.listLabel = listLabel
 
     local listHeaders = CreateFrame("Frame", nil, frame)
     listHeaders:SetSize(listWidth, 18)
@@ -1493,50 +1777,53 @@ local function createMainOptionsPanel(frame)
     emptyMappingsText:SetPoint("TOPLEFT", mappingScrollFrame, "TOPLEFT", 10, -40)
     emptyMappingsText:SetWidth(listWidth - 40)
     emptyMappingsText:SetJustifyH("LEFT")
-    emptyMappingsText:SetText("No saved mappings yet. Pick one spell above, choose a color, then add it.")
+    emptyMappingsText:SetText(L("NO_MAPPINGS"))
     emptyMappingsText:Hide()
 
-    local overridesColumnWidth = math.floor((contentWidth - 28) * 0.58)
-    local placementColumnWidth = contentWidth - overridesColumnWidth - 28
+    local overridesColumnWidth = math.floor((contentWidth - 20) * 0.58)
+    local placementColumnWidth = contentWidth - overridesColumnWidth - 20
 
     local overridesColumn = CreateFrame("Frame", nil, frame)
-    overridesColumn:SetSize(overridesColumnWidth, 160)
-    overridesColumn:SetPoint("TOPLEFT", mappingScrollFrame, "BOTTOMLEFT", 0, -16)
+    overridesColumn:SetSize(overridesColumnWidth, 150)
+    overridesColumn:SetPoint("TOPLEFT", mappingScrollFrame, "BOTTOMLEFT", 0, -12)
 
     local overridesLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     overridesLabel:SetPoint("TOPLEFT", overridesColumn, "TOPLEFT", 0, 0)
-    overridesLabel:SetText("State Overrides")
+    overridesLabel:SetText(L("STATE_OVERRIDES"))
+    frame.overridesLabel = overridesLabel
 
     local overridesHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     overridesHint:SetPoint("TOPLEFT", overridesLabel, "BOTTOMLEFT", 0, -4)
     overridesHint:SetWidth(overridesColumnWidth - 10)
     overridesHint:SetJustifyH("LEFT")
-    overridesHint:SetText("Reserved colors below are separate from spell colors and cannot be assigned to mappings.")
+    overridesHint:SetText(L("STATE_OVERRIDES_HINT"))
+    frame.overridesHint = overridesHint
 
-    local castingOverrideRow = createOverrideControl(overridesColumn, "Casting", "casting", overridesColumnWidth, 170)
-    castingOverrideRow:SetPoint("TOPLEFT", overridesHint, "BOTTOMLEFT", 0, -12)
+    local castingOverrideRow = createOverrideControl(overridesColumn, L("CASTING"), "casting", overridesColumnWidth, 160)
+    castingOverrideRow:SetPoint("TOPLEFT", overridesHint, "BOTTOMLEFT", 0, -10)
     castingOverrideCheck = castingOverrideRow.check
     castingOverrideDropdown = castingOverrideRow.dropdown
 
-    local channelingOverrideRow = createOverrideControl(overridesColumn, "Channeling", "channeling", overridesColumnWidth, 170)
-    channelingOverrideRow:SetPoint("TOPLEFT", castingOverrideRow, "BOTTOMLEFT", 0, -8)
+    local channelingOverrideRow = createOverrideControl(overridesColumn, L("CHANNELING"), "channeling", overridesColumnWidth, 160)
+    channelingOverrideRow:SetPoint("TOPLEFT", castingOverrideRow, "BOTTOMLEFT", 0, -6)
     channelingOverrideCheck = channelingOverrideRow.check
     channelingOverrideDropdown = channelingOverrideRow.dropdown
 
-    local empowerOverrideRow = createOverrideControl(overridesColumn, "Empower", "empower", overridesColumnWidth, 170)
-    empowerOverrideRow:SetPoint("TOPLEFT", channelingOverrideRow, "BOTTOMLEFT", 0, -8)
+    local empowerOverrideRow = createOverrideControl(overridesColumn, L("EMPOWER"), "empower", overridesColumnWidth, 160)
+    empowerOverrideRow:SetPoint("TOPLEFT", channelingOverrideRow, "BOTTOMLEFT", 0, -6)
     empowerOverrideCheck = empowerOverrideRow.check
     empowerOverrideDropdown = empowerOverrideRow.dropdown
 
     local placementColumn = CreateFrame("Frame", nil, frame)
-    placementColumn:SetSize(placementColumnWidth, 160)
-    placementColumn:SetPoint("TOPLEFT", overridesColumn, "TOPRIGHT", 28, 0)
+    placementColumn:SetSize(placementColumnWidth, 150)
+    placementColumn:SetPoint("TOPLEFT", overridesColumn, "TOPRIGHT", 20, 0)
 
     local placementLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     placementLabel:SetPoint("TOPLEFT", placementColumn, "TOPLEFT", 0, 0)
-    placementLabel:SetText("Indicator")
+    placementLabel:SetText(L("INDICATOR"))
+    frame.placementLabel = placementLabel
 
-    local sizeHolder = createPlacementInput(placementColumn, "Size", 72, function(text)
+    local sizeHolder = createPlacementInput(placementColumn, L("SIZE"), 72, function(text)
         local value = parseInteger(text)
         if not value then
             syncPlacementControls()
@@ -1578,37 +1865,598 @@ local function createMainOptionsPanel(frame)
 
     markerToggleCheck = CreateFrame("CheckButton", addonName .. "MarkerToggle", placementColumn, "UICheckButtonTemplate")
     markerToggleCheck:SetPoint("TOPLEFT", sizeHolder, "BOTTOMLEFT", 0, -12)
-    markerToggleCheck.text:SetText("Show Marker")
+    markerToggleCheck.text:SetText(L("SHOW_MARKER"))
     markerToggleCheck:SetScript("OnClick", function(self)
         db().showMarker = self:GetChecked() and true or false
         refreshVisibility()
     end)
 
     lockToggleButton = CreateFrame("Button", nil, placementColumn, "GameMenuButtonTemplate")
-    lockToggleButton:SetPoint("TOPLEFT", markerToggleCheck, "BOTTOMLEFT", 4, -12)
+    lockToggleButton:SetPoint("TOPLEFT", markerToggleCheck, "BOTTOMLEFT", 4, -10)
     lockToggleButton:SetSize(150, 24)
-    lockToggleButton:SetText("Unlock")
+    lockToggleButton:SetText(L("UNLOCK"))
     lockToggleButton:SetScript("OnClick", function()
         db().locked = not db().locked
         updateEditorControls()
         refreshVisibility()
     end)
+
+    local languageLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    languageLabel:SetPoint("TOPLEFT", lockToggleButton, "BOTTOMLEFT", 0, -14)
+    languageLabel:SetText(L("LANGUAGE"))
+    frame.languageLabel = languageLabel
+
+    local langEn = CreateFrame("Button", nil, placementColumn, "GameMenuButtonTemplate")
+    langEn:SetSize(80, 22)
+    langEn:SetPoint("TOPLEFT", languageLabel, "BOTTOMLEFT", 0, -6)
+    langEn:SetText(L("LANG_EN"))
+    langEn:SetScript("OnClick", function()
+        db().locale = "en"
+        refreshOptionsLocale()
+        refreshAllEditorViews()
+        refreshVisibility()
+    end)
+
+    local langKo = CreateFrame("Button", nil, placementColumn, "GameMenuButtonTemplate")
+    langKo:SetSize(80, 22)
+    langKo:SetPoint("LEFT", langEn, "RIGHT", 8, 0)
+    langKo:SetText(L("LANG_KO"))
+    langKo:SetScript("OnClick", function()
+        db().locale = "ko"
+        refreshOptionsLocale()
+        refreshAllEditorViews()
+        refreshVisibility()
+    end)
+    frame.langEn = langEn
+    frame.langKo = langKo
+end
+
+local function upsertPriorityEntry(listKey, spellId, colorIndex)
+    if not spellId or not colorIndex then
+        return
+    end
+    local root = db()[listKey]
+    if type(root) ~= "table" then
+        db()[listKey] = {entries = {}}
+        root = db()[listKey]
+    end
+    root.entries = type(root.entries) == "table" and root.entries or {}
+    for _, entry in ipairs(root.entries) do
+        if entry.spellId == spellId then
+            entry.colorIndex = colorIndex
+            entry.enabled = true
+            sanitizeSettings()
+            return
+        end
+    end
+    table.insert(root.entries, {
+        spellId = spellId,
+        colorIndex = colorIndex,
+        enabled = true,
+    })
+    sanitizeSettings()
+end
+
+local function createPriorityRow(parent, _)
+    local row = CreateFrame("Frame", nil, parent)
+    row:SetSize(math.max((parent:GetWidth() or 700) - 24, 600), PRIORITY_ROW_HEIGHT)
+
+    row.enable = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+    row.enable:SetPoint("LEFT", 0, 0)
+    row.enable:SetSize(24, 24)
+
+    row.priorityText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row.priorityText:SetPoint("LEFT", row.enable, "RIGHT", 2, 0)
+    row.priorityText:SetWidth(24)
+
+    row.spellText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    row.spellText:SetPoint("LEFT", row.priorityText, "RIGHT", 6, 0)
+    row.spellText:SetWidth(220)
+    row.spellText:SetJustifyH("LEFT")
+
+    row.swatch = CreateFrame("Frame", nil, row, "BackdropTemplate")
+    row.swatch:SetSize(16, 16)
+    row.swatch:SetPoint("LEFT", row.spellText, "RIGHT", 8, 0)
+    row.swatch:SetBackdrop({
+        bgFile = "Interface/Buttons/WHITE8X8",
+        edgeFile = "Interface/Buttons/WHITE8X8",
+        edgeSize = 1,
+    })
+
+    row.colorText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    row.colorText:SetPoint("LEFT", row.swatch, "RIGHT", 6, 0)
+    row.colorText:SetWidth(90)
+
+    row.upButton = CreateFrame("Button", nil, row, "GameMenuButtonTemplate")
+    row.upButton:SetSize(44, 20)
+    row.upButton:SetPoint("LEFT", row.colorText, "RIGHT", 8, 0)
+    row.upButton:SetText(L("UP"))
+
+    row.downButton = CreateFrame("Button", nil, row, "GameMenuButtonTemplate")
+    row.downButton:SetSize(50, 20)
+    row.downButton:SetPoint("LEFT", row.upButton, "RIGHT", 4, 0)
+    row.downButton:SetText(L("DOWN"))
+
+    row.deleteButton = CreateFrame("Button", nil, row, "GameMenuButtonTemplate")
+    row.deleteButton:SetSize(56, 20)
+    row.deleteButton:SetPoint("LEFT", row.downButton, "RIGHT", 4, 0)
+    row.deleteButton:SetText(L("DELETE"))
+
+    row:Hide()
+    return row
+end
+
+local function bindPriorityRows(rows, scrollFrame, emptyText, listKey, refreshFn)
+    local root = db()[listKey]
+    local entries = root and root.entries or {}
+    local total = #entries
+    local offset = 0
+    if scrollFrame then
+        FauxScrollFrame_Update(scrollFrame, total, PRIORITY_VISIBLE_ROWS, PRIORITY_ROW_HEIGHT)
+        offset = FauxScrollFrame_GetOffset(scrollFrame)
+    end
+
+    for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+        local row = rows[rowIndex]
+        local entry = entries[offset + rowIndex]
+        if entry then
+            local entryIndex = offset + rowIndex
+            row:Show()
+            row.enable:SetChecked(entry.enabled ~= false)
+            row.priorityText:SetText(tostring(entryIndex))
+            row.spellText:SetText(getSpellNameSafe(entry.spellId))
+            row.colorText:SetText(getColorName(entry.colorIndex))
+            row.swatch:SetBackdropColor(getPaletteColor(entry.colorIndex))
+            row.upButton:SetEnabled(entryIndex > 1)
+            row.downButton:SetEnabled(entryIndex < total)
+            row.enable:SetScript("OnClick", function(self)
+                entry.enabled = self:GetChecked() and true or false
+                refreshFn()
+                refreshVisibility()
+            end)
+            row.upButton:SetScript("OnClick", function()
+                Logic.movePriorityEntry(entries, entryIndex, -1)
+                refreshFn()
+                refreshVisibility()
+            end)
+            row.downButton:SetScript("OnClick", function()
+                Logic.movePriorityEntry(entries, entryIndex, 1)
+                refreshFn()
+                refreshVisibility()
+            end)
+            row.deleteButton:SetScript("OnClick", function()
+                table.remove(entries, entryIndex)
+                refreshFn()
+                refreshVisibility()
+            end)
+        else
+            row:Hide()
+        end
+    end
+
+    if emptyText then
+        if total == 0 then
+            emptyText:Show()
+        else
+            emptyText:Hide()
+        end
+    end
+end
+
+local function createDefenseOptionsPanel(frame)
+    local contentWidth = frame:GetWidth() - 24
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", 8, -8)
+    title:SetText(L("DEFENSE_TITLE"))
+    frame.defenseTitle = title
+
+    local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+    subtitle:SetWidth(contentWidth)
+    subtitle:SetJustifyH("LEFT")
+    subtitle:SetText(L("DEFENSE_SUBTITLE"))
+    frame.defenseSubtitle = subtitle
+
+    local enableCheck = CreateFrame("CheckButton", addonName .. "DefenseEnable", frame, "UICheckButtonTemplate")
+    enableCheck:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -10)
+    enableCheck.text:SetText(L("DEFENSE_ENABLE"))
+    enableCheck:SetScript("OnClick", function(self)
+        db().defense.enabled = self:GetChecked() and true or false
+        refreshDefenseBox()
+    end)
+    frame.defenseEnable = enableCheck
+
+    local lockCheck = CreateFrame("CheckButton", addonName .. "DefenseLock", frame, "UICheckButtonTemplate")
+    lockCheck:SetPoint("LEFT", enableCheck, "RIGHT", 160, 0)
+    lockCheck.text:SetText(L("DEFENSE_LOCKED"))
+    lockCheck:SetScript("OnClick", function(self)
+        db().defense.locked = self:GetChecked() and true or false
+        refreshDefenseBox()
+    end)
+    frame.defenseLock = lockCheck
+
+    local sizeHolder = createPlacementInput(frame, L("DEFENSE_SIZE"), 72, function(text)
+        local value = parseInteger(text)
+        if not value then
+            return
+        end
+        db().defense.size = clamp(value, 24, 300)
+        applyDefenseSize()
+        refreshDefenseBox()
+    end)
+    sizeHolder:SetPoint("TOPLEFT", enableCheck, "BOTTOMLEFT", 0, -8)
+    frame.defenseSizeInput = sizeHolder.input
+
+    local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    editorLabel:SetPoint("TOPLEFT", sizeHolder, "BOTTOMLEFT", 0, -12)
+    editorLabel:SetText(L("DEFENSE_ADD"))
+    frame.defenseEditorLabel = editorLabel
+
+    local editorRow = CreateFrame("Frame", nil, frame)
+    editorRow:SetSize(contentWidth, 40)
+    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -6)
+
+    local spellDropdown = CreateFrame("Frame", addonName .. "DefenseSpellDropdown", editorRow, "UIDropDownMenuTemplate")
+    spellDropdown:SetPoint("LEFT", -12, -4)
+    UIDropDownMenu_SetWidth(spellDropdown, 280)
+    UIDropDownMenu_JustifyText(spellDropdown, "LEFT")
+    UIDropDownMenu_Initialize(spellDropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, spellInfo in ipairs(getFilteredAvailableSpells()) do
+            info.text = spellInfo.name
+            info.value = spellInfo.spellId
+            info.func = function()
+                state.defenseEditorSpellId = spellInfo.spellId
+                UIDropDownMenu_SetSelectedValue(spellDropdown, spellInfo.spellId)
+                UIDropDownMenu_SetText(spellDropdown, spellInfo.name)
+            end
+            info.checked = state.defenseEditorSpellId == spellInfo.spellId
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    local colorDropdown = CreateFrame("Frame", addonName .. "DefenseColorDropdown", editorRow, "UIDropDownMenuTemplate")
+    colorDropdown:SetPoint("LEFT", spellDropdown, "RIGHT", -8, 0)
+    UIDropDownMenu_SetWidth(colorDropdown, 140)
+    UIDropDownMenu_Initialize(colorDropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for index = 2, #COLOR_PALETTE do
+            info.text = COLOR_PALETTE[index].name
+            info.value = index
+            info.func = function()
+                state.defenseEditorColorIndex = index
+                UIDropDownMenu_SetSelectedValue(colorDropdown, index)
+                UIDropDownMenu_SetText(colorDropdown, COLOR_PALETTE[index].name)
+            end
+            info.checked = state.defenseEditorColorIndex == index
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+    UIDropDownMenu_SetSelectedValue(colorDropdown, state.defenseEditorColorIndex or 2)
+    UIDropDownMenu_SetText(colorDropdown, getColorName(state.defenseEditorColorIndex or 2))
+
+    local addButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
+    addButton:SetSize(90, 22)
+    addButton:SetPoint("LEFT", colorDropdown, "RIGHT", 0, 0)
+    addButton:SetText(L("ADD"))
+    addButton:SetScript("OnClick", function()
+        upsertPriorityEntry("defense", state.defenseEditorSpellId, state.defenseEditorColorIndex or 2)
+        updateDefenseRows()
+        refreshDefenseBox()
+    end)
+    frame.defenseAddButton = addButton
+
+    local listLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    listLabel:SetPoint("TOPLEFT", editorRow, "BOTTOMLEFT", 0, -12)
+    listLabel:SetText(L("DEFENSE_LIST"))
+    frame.defenseListLabel = listLabel
+
+    local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hint:SetPoint("TOPLEFT", listLabel, "BOTTOMLEFT", 0, -4)
+    hint:SetWidth(contentWidth)
+    hint:SetJustifyH("LEFT")
+    hint:SetText(L("DEFENSE_HINT"))
+    frame.defenseHint = hint
+
+    defenseScrollFrame = CreateFrame("ScrollFrame", addonName .. "DefenseScroll", frame, "FauxScrollFrameTemplate")
+    defenseScrollFrame:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -8)
+    defenseScrollFrame:SetSize(contentWidth - 10, PRIORITY_VISIBLE_ROWS * PRIORITY_ROW_HEIGHT)
+    defenseScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
+        FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateDefenseRows)
+    end)
+
+    for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+        local row = createPriorityRow(frame, rowIndex)
+        if rowIndex == 1 then
+            row:SetPoint("TOPLEFT", defenseScrollFrame, "TOPLEFT", 0, 0)
+        else
+            row:SetPoint("TOPLEFT", defenseRows[rowIndex - 1], "BOTTOMLEFT", 0, 0)
+        end
+        defenseRows[rowIndex] = row
+    end
+
+    emptyDefenseText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    emptyDefenseText:SetPoint("TOPLEFT", defenseScrollFrame, "TOPLEFT", 8, -30)
+    emptyDefenseText:SetWidth(contentWidth - 40)
+    emptyDefenseText:SetJustifyH("LEFT")
+    emptyDefenseText:SetText(L("DEFENSE_EMPTY"))
+    emptyDefenseText:Hide()
+
+    updateDefenseRows = function()
+        if frame.defenseEnable then
+            frame.defenseEnable:SetChecked(db().defense.enabled ~= false)
+            frame.defenseLock:SetChecked(db().defense.locked ~= false)
+            if frame.defenseSizeInput then
+                frame.defenseSizeInput:SetText(tostring(db().defense.size or defaults.defense.size))
+            end
+        end
+        bindPriorityRows(defenseRows, defenseScrollFrame, emptyDefenseText, "defense", updateDefenseRows)
+    end
+end
+
+local function createProcOptionsPanel(frame)
+    local contentWidth = frame:GetWidth() - 24
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", 8, -8)
+    title:SetText(L("PROCS_TITLE"))
+    frame.procTitle = title
+
+    local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -4)
+    subtitle:SetWidth(contentWidth)
+    subtitle:SetJustifyH("LEFT")
+    subtitle:SetText(L("PROCS_SUBTITLE"))
+    frame.procSubtitle = subtitle
+
+    local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    editorLabel:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -12)
+    editorLabel:SetText(L("PROCS_ADD"))
+    frame.procEditorLabel = editorLabel
+
+    local editorRow = CreateFrame("Frame", nil, frame)
+    editorRow:SetSize(contentWidth, 40)
+    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -6)
+
+    local spellDropdown = CreateFrame("Frame", addonName .. "ProcSpellDropdown", editorRow, "UIDropDownMenuTemplate")
+    spellDropdown:SetPoint("LEFT", -12, -4)
+    UIDropDownMenu_SetWidth(spellDropdown, 280)
+    UIDropDownMenu_Initialize(spellDropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, spellInfo in ipairs(getFilteredAvailableSpells()) do
+            info.text = spellInfo.name
+            info.value = spellInfo.spellId
+            info.func = function()
+                state.procEditorSpellId = spellInfo.spellId
+                UIDropDownMenu_SetSelectedValue(spellDropdown, spellInfo.spellId)
+                UIDropDownMenu_SetText(spellDropdown, spellInfo.name)
+            end
+            info.checked = state.procEditorSpellId == spellInfo.spellId
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    local colorDropdown = CreateFrame("Frame", addonName .. "ProcColorDropdown", editorRow, "UIDropDownMenuTemplate")
+    colorDropdown:SetPoint("LEFT", spellDropdown, "RIGHT", -8, 0)
+    UIDropDownMenu_SetWidth(colorDropdown, 140)
+    UIDropDownMenu_Initialize(colorDropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for index = 2, #COLOR_PALETTE do
+            info.text = COLOR_PALETTE[index].name
+            info.value = index
+            info.func = function()
+                state.procEditorColorIndex = index
+                UIDropDownMenu_SetSelectedValue(colorDropdown, index)
+                UIDropDownMenu_SetText(colorDropdown, COLOR_PALETTE[index].name)
+            end
+            info.checked = state.procEditorColorIndex == index
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+    UIDropDownMenu_SetSelectedValue(colorDropdown, state.procEditorColorIndex or 2)
+    UIDropDownMenu_SetText(colorDropdown, getColorName(state.procEditorColorIndex or 2))
+
+    local addButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
+    addButton:SetSize(90, 22)
+    addButton:SetPoint("LEFT", colorDropdown, "RIGHT", 0, 0)
+    addButton:SetText(L("ADD"))
+    addButton:SetScript("OnClick", function()
+        upsertPriorityEntry("procs", state.procEditorSpellId, state.procEditorColorIndex or 2)
+        updateProcRows()
+        updateSpellState()
+    end)
+    frame.procAddButton = addButton
+
+    local suggestButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    suggestButton:SetSize(170, 22)
+    suggestButton:SetPoint("TOPLEFT", editorRow, "BOTTOMLEFT", 0, -10)
+    suggestButton:SetText(L("PROCS_SUGGEST"))
+    suggestButton:SetScript("OnClick", function()
+        refreshAvailableSpells()
+        local known = {}
+        for _, entry in ipairs(db().procs.entries or {}) do
+            known[entry.spellId] = true
+        end
+        local added = 0
+        for _, spellInfo in ipairs(state.availableSpells) do
+            if isProcActive(spellInfo.spellId) and not known[spellInfo.spellId] then
+                upsertPriorityEntry("procs", spellInfo.spellId, state.procEditorColorIndex or 2)
+                known[spellInfo.spellId] = true
+                added = added + 1
+            end
+        end
+        if added == 0 then
+            print("|cff33ff99Shinkili|r " .. L("PROCS_SUGGEST_NONE"))
+        else
+            print("|cff33ff99Shinkili|r " .. string.format(L("PROCS_SUGGEST_ADDED"), added))
+        end
+        updateProcRows()
+        updateSpellState()
+    end)
+    frame.procSuggestButton = suggestButton
+
+    local suggestHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    suggestHint:SetPoint("LEFT", suggestButton, "RIGHT", 10, 0)
+    suggestHint:SetWidth(contentWidth - 200)
+    suggestHint:SetJustifyH("LEFT")
+    suggestHint:SetText(L("PROCS_SUGGEST_HINT"))
+    frame.procSuggestHint = suggestHint
+
+    local listLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    listLabel:SetPoint("TOPLEFT", suggestButton, "BOTTOMLEFT", 0, -14)
+    listLabel:SetText(L("PROCS_LIST"))
+    frame.procListLabel = listLabel
+
+    local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hint:SetPoint("TOPLEFT", listLabel, "BOTTOMLEFT", 0, -4)
+    hint:SetWidth(contentWidth)
+    hint:SetJustifyH("LEFT")
+    hint:SetText(L("PROCS_HINT"))
+    frame.procHint = hint
+
+    procScrollFrame = CreateFrame("ScrollFrame", addonName .. "ProcScroll", frame, "FauxScrollFrameTemplate")
+    procScrollFrame:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -8)
+    procScrollFrame:SetSize(contentWidth - 10, PRIORITY_VISIBLE_ROWS * PRIORITY_ROW_HEIGHT)
+    procScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
+        FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateProcRows)
+    end)
+
+    for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+        local row = createPriorityRow(frame, rowIndex)
+        if rowIndex == 1 then
+            row:SetPoint("TOPLEFT", procScrollFrame, "TOPLEFT", 0, 0)
+        else
+            row:SetPoint("TOPLEFT", procRows[rowIndex - 1], "BOTTOMLEFT", 0, 0)
+        end
+        procRows[rowIndex] = row
+    end
+
+    emptyProcText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    emptyProcText:SetPoint("TOPLEFT", procScrollFrame, "TOPLEFT", 8, -30)
+    emptyProcText:SetWidth(contentWidth - 40)
+    emptyProcText:SetJustifyH("LEFT")
+    emptyProcText:SetText(L("PROCS_EMPTY"))
+    emptyProcText:Hide()
+
+    updateProcRows = function()
+        bindPriorityRows(procRows, procScrollFrame, emptyProcText, "procs", updateProcRows)
+    end
+end
+
+selectOptionsTab = function(tabKey)
+    state.optionsTab = tabKey
+    for key, panel in pairs(optionsPanels) do
+        if key == tabKey then
+            panel:Show()
+        else
+            panel:Hide()
+        end
+    end
+    for key, button in pairs(optionsTabs) do
+        if key == tabKey then
+            button:Disable()
+        else
+            button:Enable()
+        end
+    end
+    if tabKey == "defense" and updateDefenseRows then
+        updateDefenseRows()
+    elseif tabKey == "procs" and updateProcRows then
+        updateProcRows()
+    elseif tabKey == "main" then
+        updateMappingRows()
+        updateEditorControls()
+    end
+end
+
+refreshOptionsLocale = function()
+    if not options then
+        return
+    end
+    options.TitleText:SetText(L("ADDON_NAME"))
+    if optionsTabs.main then
+        optionsTabs.main:SetText(L("TAB_MAIN"))
+        optionsTabs.defense:SetText(L("TAB_DEFENSE"))
+        optionsTabs.procs:SetText(L("TAB_PROCS"))
+    end
+    if options.resetButton then
+        options.resetButton:SetText(L("RESET_DEFAULTS"))
+    end
+    if options.closeButton then
+        options.closeButton:SetText(L("CLOSE"))
+    end
+
+    local main = optionsPanels.main
+    if main then
+        if main.mainTitle then main.mainTitle:SetText(L("MAIN_TITLE")) end
+        if main.mainSubtitle then main.mainSubtitle:SetText(L("MAIN_SUBTITLE")) end
+        if main.editorLabel then main.editorLabel:SetText(L("QUICK_EDITOR")) end
+        if main.searchHint then main.searchHint:SetText(L("SEARCH_HINT")) end
+        if main.listLabel then main.listLabel:SetText(L("SAVED_MAPPINGS")) end
+        if main.overridesLabel then main.overridesLabel:SetText(L("STATE_OVERRIDES")) end
+        if main.overridesHint then main.overridesHint:SetText(L("STATE_OVERRIDES_HINT")) end
+        if main.placementLabel then main.placementLabel:SetText(L("INDICATOR")) end
+        if main.languageLabel then main.languageLabel:SetText(L("LANGUAGE")) end
+        if main.langEn then main.langEn:SetText(L("LANG_EN")) end
+        if main.langKo then main.langKo:SetText(L("LANG_KO")) end
+        if markerToggleCheck and markerToggleCheck.text then
+            markerToggleCheck.text:SetText(L("SHOW_MARKER"))
+        end
+        if emptyMappingsText then
+            emptyMappingsText:SetText(L("NO_MAPPINGS"))
+        end
+    end
+
+    local defense = optionsPanels.defense
+    if defense then
+        if defense.defenseTitle then defense.defenseTitle:SetText(L("DEFENSE_TITLE")) end
+        if defense.defenseSubtitle then defense.defenseSubtitle:SetText(L("DEFENSE_SUBTITLE")) end
+        if defense.defenseEnable and defense.defenseEnable.text then
+            defense.defenseEnable.text:SetText(L("DEFENSE_ENABLE"))
+        end
+        if defense.defenseLock and defense.defenseLock.text then
+            defense.defenseLock.text:SetText(L("DEFENSE_LOCKED"))
+        end
+        if defense.defenseEditorLabel then defense.defenseEditorLabel:SetText(L("DEFENSE_ADD")) end
+        if defense.defenseListLabel then defense.defenseListLabel:SetText(L("DEFENSE_LIST")) end
+        if defense.defenseHint then defense.defenseHint:SetText(L("DEFENSE_HINT")) end
+        if defense.defenseAddButton then defense.defenseAddButton:SetText(L("ADD")) end
+        if emptyDefenseText then emptyDefenseText:SetText(L("DEFENSE_EMPTY")) end
+    end
+
+    local procs = optionsPanels.procs
+    if procs then
+        if procs.procTitle then procs.procTitle:SetText(L("PROCS_TITLE")) end
+        if procs.procSubtitle then procs.procSubtitle:SetText(L("PROCS_SUBTITLE")) end
+        if procs.procEditorLabel then procs.procEditorLabel:SetText(L("PROCS_ADD")) end
+        if procs.procListLabel then procs.procListLabel:SetText(L("PROCS_LIST")) end
+        if procs.procHint then procs.procHint:SetText(L("PROCS_HINT")) end
+        if procs.procAddButton then procs.procAddButton:SetText(L("ADD")) end
+        if procs.procSuggestButton then procs.procSuggestButton:SetText(L("PROCS_SUGGEST")) end
+        if procs.procSuggestHint then procs.procSuggestHint:SetText(L("PROCS_SUGGEST_HINT")) end
+        if emptyProcText then emptyProcText:SetText(L("PROCS_EMPTY")) end
+    end
+
+    updateCurrentSpellText()
 end
 
 local function createOptionsFooter(frame)
     local resetButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    resetButton:SetPoint("BOTTOMRIGHT", -18, 20)
-    resetButton:SetSize(150, 24)
-    resetButton:SetText("Reset Defaults")
+    resetButton:SetPoint("BOTTOMRIGHT", -16, 14)
+    resetButton:SetSize(140, 24)
+    resetButton:SetText(L("RESET_DEFAULTS"))
     resetButton:SetScript("OnClick", resetToDefaults)
+    frame.resetButton = resetButton
 
     local closeButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    closeButton:SetPoint("RIGHT", resetButton, "LEFT", -10, 0)
-    closeButton:SetSize(130, 24)
-    closeButton:SetText("Close")
+    closeButton:SetPoint("RIGHT", resetButton, "LEFT", -8, 0)
+    closeButton:SetSize(110, 24)
+    closeButton:SetText(L("CLOSE"))
     closeButton:SetScript("OnClick", function()
         frame:Hide()
     end)
+    frame.closeButton = closeButton
 end
 
 local function attachOptionsLifecycle(frame)
@@ -1618,7 +2466,9 @@ local function attachOptionsLifecycle(frame)
         sanitizeSettings()
         syncEditorSelection()
         updateSpellState()
+        refreshOptionsLocale()
         refreshAllEditorViews()
+        selectOptionsTab(state.optionsTab or "main")
         refreshVisibility()
     end)
 
@@ -1631,7 +2481,7 @@ end
 
 local function createOptionsWindow()
     options = CreateFrame("Frame", "ShinkiliOptionsFrame", UIParent, "BasicFrameTemplateWithInset")
-    options:SetSize(900, 720)
+    options:SetSize(OPTIONS_WIDTH, OPTIONS_HEIGHT)
     options:SetPoint("CENTER")
     options:SetMovable(true)
     options:SetClampedToScreen(true)
@@ -1641,16 +2491,57 @@ local function createOptionsWindow()
     options:SetScript("OnDragStop", options.StopMovingOrSizing)
     options:Hide()
 
-    options.TitleText:SetText("Shinkili")
+    options.TitleText:SetText(L("ADDON_NAME"))
     if options.CloseButton then
         options.CloseButton:SetScript("OnClick", function()
             options:Hide()
         end)
     end
 
-    createMainOptionsPanel(options)
+    local tabY = -28
+    local tabWidth = 100
+    local function makeTab(key, labelKey, x)
+        local button = CreateFrame("Button", nil, options, "GameMenuButtonTemplate")
+        button:SetSize(tabWidth, 22)
+        button:SetPoint("TOPLEFT", 14 + x, tabY)
+        button:SetText(L(labelKey))
+        button:SetScript("OnClick", function()
+            selectOptionsTab(key)
+        end)
+        optionsTabs[key] = button
+        return button
+    end
+    makeTab("main", "TAB_MAIN", 0)
+    makeTab("defense", "TAB_DEFENSE", tabWidth + 6)
+    makeTab("procs", "TAB_PROCS", (tabWidth + 6) * 2)
+
+    local panelTop = -56
+    local panelHeight = OPTIONS_HEIGHT - 100
+    local panelWidth = OPTIONS_WIDTH - 28
+
+    local mainPanel = CreateFrame("Frame", nil, options)
+    mainPanel:SetPoint("TOPLEFT", 14, panelTop)
+    mainPanel:SetSize(panelWidth, panelHeight)
+    createMainOptionsPanel(mainPanel)
+    optionsPanels.main = mainPanel
+
+    local defensePanel = CreateFrame("Frame", nil, options)
+    defensePanel:SetPoint("TOPLEFT", 14, panelTop)
+    defensePanel:SetSize(panelWidth, panelHeight)
+    createDefenseOptionsPanel(defensePanel)
+    defensePanel:Hide()
+    optionsPanels.defense = defensePanel
+
+    local procPanel = CreateFrame("Frame", nil, options)
+    procPanel:SetPoint("TOPLEFT", 14, panelTop)
+    procPanel:SetSize(panelWidth, panelHeight)
+    createProcOptionsPanel(procPanel)
+    procPanel:Hide()
+    optionsPanels.procs = procPanel
+
     createOptionsFooter(options)
     attachOptionsLifecycle(options)
+    selectOptionsTab("main")
 end
 
 local function toggleOptionsWindow()
@@ -1739,11 +2630,11 @@ local function createMinimapButton()
 
     button:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:AddLine("Shinkili", 0.2, 1.0, 0.6)
-        GameTooltip:AddLine("Left-click: Toggle settings", 1, 1, 1)
-        GameTooltip:AddLine("Drag: Move button", 0.8, 0.8, 0.8)
-        GameTooltip:AddLine("Right-click: Hide button", 0.8, 0.8, 0.8)
-        GameTooltip:AddLine("Restore with /sk minimap on", 0.65, 0.65, 0.65)
+        GameTooltip:AddLine(L("MINIMAP_TITLE"), 0.2, 1.0, 0.6)
+        GameTooltip:AddLine(L("MINIMAP_TOGGLE"), 1, 1, 1)
+        GameTooltip:AddLine(L("MINIMAP_DRAG"), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(L("MINIMAP_HIDE"), 0.8, 0.8, 0.8)
+        GameTooltip:AddLine(L("MINIMAP_RESTORE"), 0.65, 0.65, 0.65)
         GameTooltip:Show()
     end)
 
@@ -1796,7 +2687,7 @@ local function createMinimapButton()
         if mouseButton == "RightButton" then
             db().showMinimapButton = false
             refreshMinimapButton()
-            print("|cff33ff99Shinkili|r minimap button hidden. Use /sk minimap on to restore.")
+            print("|cff33ff99Shinkili|r " .. L("MSG_MINIMAP_HIDDEN"))
         end
     end)
 
@@ -1836,14 +2727,15 @@ refreshMinimapButton = function()
 end
 
 local function printUsage()
-    print("|cff33ff99Shinkili|r commands:")
-    print("/shinkili or /sk - Open settings")
-    print("/sk lock - Lock the square")
-    print("/sk unlock - Unlock and show move preview")
-    print("/sk marker on|off - Show or hide the helper marker")
-    print("/sk minimap on|off - Show or hide the minimap button")
-    print("/sk size <number> - Set main square size")
-    print("/sk reset - Reset defaults")
+    print("|cff33ff99Shinkili|r " .. L("CMD_USAGE"))
+    print(L("CMD_OPEN"))
+    print(L("CMD_LOCK"))
+    print(L("CMD_UNLOCK"))
+    print(L("CMD_MARKER"))
+    print(L("CMD_MINIMAP"))
+    print(L("CMD_SIZE"))
+    print(L("CMD_RESET"))
+    print(L("CMD_LANG"))
 end
 
 SLASH_SHINKILI1 = "/shinkili"
@@ -1862,7 +2754,7 @@ SlashCmdList.SHINKILI = function(msg)
         db().locked = true
         updateEditorControls()
         refreshVisibility()
-        print("|cff33ff99Shinkili|r locked.")
+        print("|cff33ff99Shinkili|r " .. L("MSG_LOCKED"))
         return
     end
 
@@ -1870,21 +2762,21 @@ SlashCmdList.SHINKILI = function(msg)
         db().locked = false
         updateEditorControls()
         refreshVisibility()
-        print("|cff33ff99Shinkili|r unlocked.")
+        print("|cff33ff99Shinkili|r " .. L("MSG_UNLOCKED"))
         return
     end
 
     if command == "size" then
         local numeric = tonumber(value)
         if not numeric then
-            print("|cff33ff99Shinkili|r size must be a number.")
+            print("|cff33ff99Shinkili|r " .. L("MSG_SIZE_BAD"))
             return
         end
         db().size = clamp(math.floor(numeric + 0.5), 24, 300)
         applySize()
         syncPlacementControls()
         refreshVisibility()
-        print("|cff33ff99Shinkili|r size set to " .. db().size .. ".")
+        print("|cff33ff99Shinkili|r " .. string.format(L("MSG_SIZE"), tostring(db().size)))
         return
     end
 
@@ -1894,17 +2786,17 @@ SlashCmdList.SHINKILI = function(msg)
             db().showMarker = true
             updateEditorControls()
             refreshVisibility()
-            print("|cff33ff99Shinkili|r helper marker shown.")
+            print("|cff33ff99Shinkili|r " .. L("MSG_MARKER_ON"))
             return
         end
         if normalized == "off" then
             db().showMarker = false
             updateEditorControls()
             refreshVisibility()
-            print("|cff33ff99Shinkili|r helper marker hidden.")
+            print("|cff33ff99Shinkili|r " .. L("MSG_MARKER_OFF"))
             return
         end
-        print("|cff33ff99Shinkili|r usage: /sk marker on|off")
+        print("|cff33ff99Shinkili|r " .. L("MSG_MARKER_USAGE"))
         return
     end
 
@@ -1913,22 +2805,38 @@ SlashCmdList.SHINKILI = function(msg)
         if normalized == "on" then
             db().showMinimapButton = true
             refreshMinimapButton()
-            print("|cff33ff99Shinkili|r minimap button shown.")
+            print("|cff33ff99Shinkili|r " .. L("MSG_MINIMAP_ON"))
             return
         end
         if normalized == "off" then
             db().showMinimapButton = false
             refreshMinimapButton()
-            print("|cff33ff99Shinkili|r minimap button hidden.")
+            print("|cff33ff99Shinkili|r " .. L("MSG_MINIMAP_OFF"))
             return
         end
-        print("|cff33ff99Shinkili|r usage: /sk minimap on|off")
+        print("|cff33ff99Shinkili|r " .. L("MSG_MINIMAP_USAGE"))
+        return
+    end
+
+    if command == "lang" or command == "locale" then
+        local normalized = Locale and Locale.normalize(trim(value):lower()) or trim(value):lower()
+        if normalized ~= "en" and normalized ~= "ko" then
+            print("|cff33ff99Shinkili|r " .. L("MSG_LANG_USAGE"))
+            return
+        end
+        db().locale = normalized
+        if refreshOptionsLocale then
+            refreshOptionsLocale()
+        end
+        refreshAllEditorViews()
+        refreshVisibility()
+        print("|cff33ff99Shinkili|r " .. string.format(L("MSG_LANG"), normalized))
         return
     end
 
     if command == "reset" then
         resetToDefaults()
-        print("|cff33ff99Shinkili|r reset to defaults.")
+        print("|cff33ff99Shinkili|r " .. L("MSG_RESET"))
         return
     end
 
@@ -1941,6 +2849,7 @@ local function initialize()
     end
 
     ShinkiliDB = ShinkiliDB or {}
+    ShinkiliDB.locale = ShinkiliDB.locale == nil and defaults.locale or ShinkiliDB.locale
     ShinkiliDB.size = ShinkiliDB.size == nil and defaults.size or ShinkiliDB.size
     ShinkiliDB.point = ShinkiliDB.point == nil and defaults.point or ShinkiliDB.point
     ShinkiliDB.relativePoint = ShinkiliDB.relativePoint == nil and defaults.relativePoint or ShinkiliDB.relativePoint
@@ -1952,12 +2861,25 @@ local function initialize()
     ShinkiliDB.minimapAngle = ShinkiliDB.minimapAngle == nil and defaults.minimapAngle or ShinkiliDB.minimapAngle
     ShinkiliDB.overrides = type(ShinkiliDB.overrides) == "table" and ShinkiliDB.overrides or copyDefaultOverrides()
     ShinkiliDB.mappings = type(ShinkiliDB.mappings) == "table" and ShinkiliDB.mappings or {}
+    ShinkiliDB.defense = type(ShinkiliDB.defense) == "table" and ShinkiliDB.defense or {
+        enabled = defaults.defense.enabled,
+        locked = defaults.defense.locked,
+        size = defaults.defense.size,
+        point = defaults.defense.point,
+        relativePoint = defaults.defense.relativePoint,
+        x = defaults.defense.x,
+        y = defaults.defense.y,
+        entries = {},
+    }
+    ShinkiliDB.procs = type(ShinkiliDB.procs) == "table" and ShinkiliDB.procs or {entries = {}}
     ShinkiliDB.cooldownBox = nil
 
     refreshAvailableSpells()
     sanitizeSettings()
     applySize()
     applyPosition()
+    applyDefenseSize()
+    applyDefensePosition()
     syncPlacementControls()
     updateSpellState()
     refreshMinimapButton()

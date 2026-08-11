@@ -215,7 +215,114 @@ function Logic.sanitizeSettings(settings, config)
     settings.trackedSpells = nil
     settings.spellColors = nil
     settings.cooldownBox = nil
+
+    if ShinkiliLocale and ShinkiliLocale.normalize then
+        settings.locale = ShinkiliLocale.normalize(settings.locale)
+    else
+        local raw = tostring(settings.locale or "en")
+        if raw == "ko" or raw == "kr" or raw:find("ko") then
+            settings.locale = "ko"
+        else
+            settings.locale = "en"
+        end
+    end
+
+    settings.defense = type(settings.defense) == "table" and settings.defense or {}
+    local defenseDefaults = config.defenseDefaults or {}
+    settings.defense.size = Logic.clamp(
+        tonumber(settings.defense.size) or defenseDefaults.size or 48,
+        24,
+        300
+    )
+    settings.defense.x = Logic.clamp(
+        math.floor((tonumber(settings.defense.x) or defenseDefaults.x or 100) + 0.5),
+        -1000,
+        1000
+    )
+    settings.defense.y = Logic.clamp(
+        math.floor((tonumber(settings.defense.y) or defenseDefaults.y or -120) + 0.5),
+        -1000,
+        1000
+    )
+    settings.defense.point = type(settings.defense.point) == "string" and settings.defense.point
+        or (defenseDefaults.point or "CENTER")
+    settings.defense.relativePoint = type(settings.defense.relativePoint) == "string" and settings.defense.relativePoint
+        or (defenseDefaults.relativePoint or "CENTER")
+    settings.defense.locked = settings.defense.locked ~= false
+    settings.defense.enabled = settings.defense.enabled ~= false
+    settings.defense.entries = Logic.sanitizePriorityEntries(
+        settings.defense.entries,
+        config.colorPaletteSize
+    )
+
+    settings.procs = type(settings.procs) == "table" and settings.procs or {}
+    settings.procs.entries = Logic.sanitizePriorityEntries(
+        settings.procs.entries,
+        config.colorPaletteSize
+    )
+
     return settings
+end
+
+--- Priority list: array of {spellId, colorIndex, enabled}. Order = priority (1 highest).
+function Logic.sanitizePriorityEntries(entries, colorPaletteSize)
+    local migrated = {}
+    local usedSpell = {}
+    if type(entries) ~= "table" then
+        return migrated
+    end
+
+    for index = 1, #entries do
+        local raw = entries[index]
+        if type(raw) == "table" then
+            local spellId = tonumber(raw.spellId)
+            if spellId and spellId > 0 then
+                spellId = math.floor(spellId + 0.5)
+                if not usedSpell[spellId] then
+                    local colorIndex = tonumber(raw.colorIndex)
+                    if colorIndex then
+                        colorIndex = math.floor(colorIndex + 0.5)
+                    end
+                    if not colorIndex or colorIndex < 2 or colorIndex > (colorPaletteSize or 2) then
+                        colorIndex = 2
+                    end
+                    table.insert(migrated, {
+                        spellId = spellId,
+                        colorIndex = colorIndex,
+                        enabled = raw.enabled ~= false,
+                    })
+                    usedSpell[spellId] = true
+                end
+            end
+        end
+    end
+
+    return migrated
+end
+
+function Logic.movePriorityEntry(entries, index, delta)
+    if type(entries) ~= "table" then
+        return false
+    end
+    local target = index + delta
+    if index < 1 or index > #entries or target < 1 or target > #entries then
+        return false
+    end
+    entries[index], entries[target] = entries[target], entries[index]
+    return true
+end
+
+--- First enabled entry whose spellId is in activeSet (map spellId -> true).
+function Logic.pickPriorityEntry(entries, activeSet)
+    if type(entries) ~= "table" or type(activeSet) ~= "table" then
+        return nil
+    end
+    for _, entry in ipairs(entries) do
+        if entry.enabled ~= false and entry.spellId and activeSet[entry.spellId] then
+            return entry
+        end
+    end
+    return nil
 end
 
 return Logic
