@@ -6,8 +6,19 @@ local MAPPING_ROW_HEIGHT = 28
 local PRIORITY_VISIBLE_ROWS = 6
 local PRIORITY_ROW_HEIGHT = 28
 local GCD_SPELL_ID = 61304
-local OPTIONS_WIDTH = 840
-local OPTIONS_HEIGHT = 700
+local OPTIONS_WIDTH = 900
+local OPTIONS_HEIGHT = 720
+local BLACKLIST_TOGGLE_BUTTON = "ShinkiliBlacklistToggleButton"
+local FRAME_STRATA_LIST = {
+    "BACKGROUND",
+    "LOW",
+    "MEDIUM",
+    "HIGH",
+    "DIALOG",
+    "FULLSCREEN",
+    "FULLSCREEN_DIALOG",
+    "TOOLTIP",
+}
 
 local Logic = ShinkiliLogic
 local Locale = ShinkiliLocale
@@ -23,6 +34,8 @@ local defaults = {
     showMarker = true,
     showMinimapButton = true,
     minimapAngle = 220,
+    frameStrata = "FULLSCREEN_DIALOG",
+    frameLevel = 200,
     overrides = {
         casting = {enabled = true, colorIndex = 1},
         channeling = {enabled = true, colorIndex = 2},
@@ -37,9 +50,16 @@ local defaults = {
         relativePoint = "CENTER",
         x = 100,
         y = -120,
+        frameStrata = "FULLSCREEN_DIALOG",
+        frameLevel = 190,
         entries = {},
     },
     procs = {
+        entries = {},
+    },
+    blacklist = {
+        enabled = false,
+        toggleKey = nil,
         entries = {},
     },
 }
@@ -129,6 +149,8 @@ local state = {
     defenseEditorColorIndex = 2,
     procEditorSpellId = nil,
     procEditorColorIndex = 2,
+    blacklistEditorSpellId = nil,
+    bindingListen = false,
 }
 
 local addon = CreateFrame("Frame")
@@ -242,6 +264,31 @@ defenseLabel:SetTextColor(0.96, 0.94, 0.86, 1)
 defenseLabel:SetShadowOffset(1, -1)
 defenseLabel:SetShadowColor(0, 0, 0, 0.9)
 
+local toastFrame = CreateFrame("Frame", "ShinkiliToastFrame", UIParent)
+toastFrame:SetSize(420, 56)
+toastFrame:SetPoint("CENTER", UIParent, "CENTER", 0, 80)
+toastFrame:SetFrameStrata("TOOLTIP")
+toastFrame:SetFrameLevel(500)
+toastFrame:Hide()
+local toastText = toastFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+toastText:SetPoint("CENTER")
+toastText:SetTextColor(0.20, 1.00, 0.60, 1)
+toastText:SetShadowOffset(1, -1)
+toastText:SetShadowColor(0, 0, 0, 0.95)
+
+local blacklistToggleButton = CreateFrame("Button", BLACKLIST_TOGGLE_BUTTON, UIParent)
+blacklistToggleButton:SetSize(1, 1)
+blacklistToggleButton:Hide()
+
+local bindingCaptureFrame = CreateFrame("Frame", "ShinkiliBindingCapture", UIParent)
+bindingCaptureFrame:SetAllPoints(UIParent)
+bindingCaptureFrame:EnableMouse(true)
+bindingCaptureFrame:EnableKeyboard(true)
+bindingCaptureFrame:EnableMouseWheel(true)
+bindingCaptureFrame:SetFrameStrata("TOOLTIP")
+bindingCaptureFrame:SetFrameLevel(1000)
+bindingCaptureFrame:Hide()
+
 local options
 local optionsTabs = {}
 local optionsPanels = {}
@@ -273,18 +320,27 @@ local emptyDefenseText
 local procRows = {}
 local procScrollFrame
 local emptyProcText
+local blacklistRows = {}
+local blacklistScrollFrame
+local emptyBlacklistText
 local optionsLayout
 local controlId = 0
 local updateEditorControls
 local updateMappingRows
 local updateDefenseRows
 local updateProcRows
+local updateBlacklistRows
 local syncPlacementControls
 local updateCooldownSpiral
 local refreshMinimapButton
 local refreshDefenseBox
 local selectOptionsTab
 local refreshOptionsLocale
+local applyFrameLayers
+local applyBlacklistBinding
+local setBlacklistEnabled
+local showBlacklistToast
+local updateSpellState
 
 local function db()
     return ShinkiliDB
@@ -311,6 +367,12 @@ local function sanitizeConfig()
         reservedOverrideSize = #RESERVED_OVERRIDE_PALETTE,
         defaultOverrides = defaults.overrides,
         defenseDefaults = defaults.defense,
+        frameDefaults = {
+            frameStrata = defaults.frameStrata,
+            frameLevel = defaults.frameLevel,
+            defenseFrameStrata = defaults.defense.frameStrata,
+            defenseFrameLevel = defaults.defense.frameLevel,
+        },
     }
 end
 
@@ -683,6 +745,17 @@ local function getDisplayedMoveGlowEnabled()
     return getAssignedMoveGlowEnabled(state.currentSpellId)
 end
 
+local function getBlacklistSettings()
+    local settings = db()
+    settings.blacklist = type(settings.blacklist) == "table" and settings.blacklist or {
+        enabled = false,
+        toggleKey = nil,
+        entries = {},
+    }
+    settings.blacklist.entries = type(settings.blacklist.entries) == "table" and settings.blacklist.entries or {}
+    return settings.blacklist
+end
+
 local function getCurrentRecommendedSpellId()
     if not C_AssistedCombat or not C_AssistedCombat.IsAvailable or not C_AssistedCombat.GetNextCastSpell then
         return nil
@@ -690,7 +763,34 @@ local function getCurrentRecommendedSpellId()
     if not C_AssistedCombat.IsAvailable() then
         return nil
     end
-    return C_AssistedCombat.GetNextCastSpell()
+
+    local okPrimary, primary = pcall(C_AssistedCombat.GetNextCastSpell)
+    if not okPrimary then
+        primary = nil
+    end
+
+    local blacklist = getBlacklistSettings()
+    if not blacklist.enabled then
+        return primary
+    end
+
+    local candidates = {}
+    if C_AssistedCombat.GetNextCastSpell then
+        local okAlt, alt = pcall(C_AssistedCombat.GetNextCastSpell, true)
+        if okAlt and alt and alt ~= primary then
+            table.insert(candidates, alt)
+        end
+    end
+    if C_AssistedCombat.GetRotationSpells then
+        local okRot, rotation = pcall(C_AssistedCombat.GetRotationSpells)
+        if okRot and type(rotation) == "table" then
+            for _, spellId in ipairs(rotation) do
+                table.insert(candidates, spellId)
+            end
+        end
+    end
+
+    return Logic.pickRecommendedSpell(primary, candidates, blacklist.entries, true)
 end
 
 local function getCurrentCastState()
@@ -761,6 +861,31 @@ local function applySize()
     moveGlowOuter:SetSize(db().size + 20, db().size + 20)
     moveGlowMid:SetSize(db().size + 12, db().size + 12)
     moveGlowInner:SetSize(db().size + 6, db().size + 6)
+    if applyFrameLayers then
+        applyFrameLayers()
+    end
+end
+
+applyFrameLayers = function()
+    local settings = db()
+    local strata = settings.frameStrata or defaults.frameStrata
+    local level = settings.frameLevel or defaults.frameLevel
+    square:SetFrameStrata(strata)
+    square:SetFrameLevel(level)
+    spiral:SetFrameLevel(level + 10)
+    markerDot:SetFrameLevel(level + 20)
+    moveGlowOuter:SetFrameStrata(strata)
+    moveGlowMid:SetFrameStrata(strata)
+    moveGlowInner:SetFrameStrata(strata)
+    moveGlowOuter:SetFrameLevel(math.max(1, level - 3))
+    moveGlowMid:SetFrameLevel(math.max(1, level - 2))
+    moveGlowInner:SetFrameLevel(math.max(1, level - 1))
+
+    local defense = settings.defense or defaults.defense
+    local dStrata = defense.frameStrata or defaults.defense.frameStrata
+    local dLevel = defense.frameLevel or defaults.defense.frameLevel
+    defenseBox:SetFrameStrata(dStrata)
+    defenseBox:SetFrameLevel(dLevel)
 end
 
 local function applyDefensePosition()
@@ -795,6 +920,162 @@ defenseBox:SetScript("OnDragStart", function(self)
     end
 end)
 defenseBox:SetScript("OnDragStop", onDefenseDragStop)
+
+local function formatBindingKey(key)
+    if not key or key == "" then
+        return L("BLACKLIST_UNBOUND")
+    end
+    return key
+end
+
+local function buildModifierPrefix()
+    local parts = {}
+    if IsAltKeyDown and IsAltKeyDown() then
+        table.insert(parts, "ALT")
+    end
+    if IsControlKeyDown and IsControlKeyDown() then
+        table.insert(parts, "CTRL")
+    end
+    if IsShiftKeyDown and IsShiftKeyDown() then
+        table.insert(parts, "SHIFT")
+    end
+    if #parts == 0 then
+        return ""
+    end
+    return table.concat(parts, "-") .. "-"
+end
+
+local function mouseButtonToBinding(button)
+    if button == "LeftButton" then
+        return "BUTTON1"
+    end
+    if button == "RightButton" then
+        return "BUTTON2"
+    end
+    if button == "MiddleButton" then
+        return "BUTTON3"
+    end
+    if button == "Button4" then
+        return "BUTTON4"
+    end
+    if button == "Button5" then
+        return "BUTTON5"
+    end
+    return nil
+end
+
+local function stopBindingListen()
+    state.bindingListen = false
+    bindingCaptureFrame:Hide()
+    bindingCaptureFrame:SetScript("OnKeyDown", nil)
+    bindingCaptureFrame:SetScript("OnMouseDown", nil)
+    bindingCaptureFrame:SetScript("OnMouseWheel", nil)
+    if updateBlacklistRows then
+        updateBlacklistRows()
+    end
+end
+
+local function saveToggleKey(bindingKey)
+    local blacklist = getBlacklistSettings()
+    blacklist.toggleKey = bindingKey
+    stopBindingListen()
+    applyBlacklistBinding()
+    if updateBlacklistRows then
+        updateBlacklistRows()
+    end
+end
+
+local function startBindingListen()
+    state.bindingListen = true
+    bindingCaptureFrame:Show()
+    bindingCaptureFrame:EnableKeyboard(true)
+    if bindingCaptureFrame.SetPropagateKeyboardInput then
+        bindingCaptureFrame:SetPropagateKeyboardInput(false)
+    end
+
+    bindingCaptureFrame:SetScript("OnKeyDown", function(_, key)
+        if key == "ESCAPE" then
+            stopBindingListen()
+            return
+        end
+        if key == "LSHIFT" or key == "RSHIFT" or key == "LCTRL" or key == "RCTRL"
+            or key == "LALT" or key == "RALT" or key == "LMETA" or key == "RMETA" then
+            return
+        end
+        saveToggleKey(buildModifierPrefix() .. key)
+    end)
+
+    bindingCaptureFrame:SetScript("OnMouseDown", function(_, button)
+        local mapped = mouseButtonToBinding(button)
+        if not mapped then
+            return
+        end
+        saveToggleKey(buildModifierPrefix() .. mapped)
+    end)
+
+    bindingCaptureFrame:SetScript("OnMouseWheel", function(_, delta)
+        local wheel = delta > 0 and "MOUSEWHEELUP" or "MOUSEWHEELDOWN"
+        saveToggleKey(buildModifierPrefix() .. wheel)
+    end)
+
+    if updateBlacklistRows then
+        updateBlacklistRows()
+    end
+end
+
+showBlacklistToast = function(enabled)
+    toastText:SetText(enabled and L("BLACKLIST_TOAST_ON") or L("BLACKLIST_TOAST_OFF"))
+    toastFrame:SetAlpha(1)
+    toastFrame:Show()
+    toastFrame.elapsed = 0
+    toastFrame:SetScript("OnUpdate", function(self, elapsed)
+        self.elapsed = (self.elapsed or 0) + elapsed
+        if self.elapsed < 0.9 then
+            self:SetAlpha(1)
+            return
+        end
+        local fade = self.elapsed - 0.9
+        if fade >= 0.45 then
+            self:SetScript("OnUpdate", nil)
+            self:Hide()
+            self:SetAlpha(1)
+            return
+        end
+        self:SetAlpha(1 - (fade / 0.45))
+    end)
+end
+
+applyBlacklistBinding = function()
+    if ClearOverrideBindings then
+        ClearOverrideBindings(addon)
+    end
+    local blacklist = getBlacklistSettings()
+    local key = blacklist.toggleKey
+    if key and key ~= "" and SetOverrideBindingClick then
+        SetOverrideBindingClick(addon, true, key, BLACKLIST_TOGGLE_BUTTON)
+    end
+end
+
+setBlacklistEnabled = function(enabled, showToast)
+    local blacklist = getBlacklistSettings()
+    blacklist.enabled = enabled and true or false
+    updateSpellState()
+    if showToast ~= false then
+        showBlacklistToast(blacklist.enabled)
+    end
+    if updateBlacklistRows then
+        updateBlacklistRows()
+    end
+end
+
+local function toggleBlacklistEnabled()
+    local blacklist = getBlacklistSettings()
+    setBlacklistEnabled(not blacklist.enabled, true)
+end
+
+blacklistToggleButton:SetScript("OnClick", function()
+    toggleBlacklistEnabled()
+end)
 
 refreshDefenseBox = function()
     local defense = db().defense
@@ -1000,7 +1281,7 @@ local function refreshVisibility()
     updateCurrentSpellText()
 end
 
-local function updateSpellState()
+updateSpellState = function()
     local nextSpellId = getCurrentRecommendedSpellId()
     state.currentCastState, state.currentCastSpellId = getCurrentCastState()
     if nextSpellId and nextSpellId ~= state.currentSpellId then
@@ -1537,11 +1818,25 @@ local function refreshAllEditorViews()
     syncPlacementControls()
     updateEditorControls()
     updateMappingRows()
+    local main = optionsPanels.main
+    if main then
+        if main.mainLevelInput then
+            main.mainLevelInput:SetText(tostring(db().frameLevel or defaults.frameLevel))
+        end
+        if main.mainStrataDropdown then
+            local strata = db().frameStrata or defaults.frameStrata
+            UIDropDownMenu_SetSelectedValue(main.mainStrataDropdown, strata)
+            UIDropDownMenu_SetText(main.mainStrataDropdown, strata)
+        end
+    end
     if updateDefenseRows then
         updateDefenseRows()
     end
     if updateProcRows then
         updateProcRows()
+    end
+    if updateBlacklistRows then
+        updateBlacklistRows()
     end
 end
 
@@ -1557,6 +1852,8 @@ local function resetToDefaults()
     settings.showMarker = defaults.showMarker
     settings.showMinimapButton = defaults.showMinimapButton
     settings.minimapAngle = defaults.minimapAngle
+    settings.frameStrata = defaults.frameStrata
+    settings.frameLevel = defaults.frameLevel
     settings.overrides = copyDefaultOverrides()
     settings.mappings = {}
     settings.defense = {
@@ -1567,9 +1864,16 @@ local function resetToDefaults()
         relativePoint = defaults.defense.relativePoint,
         x = defaults.defense.x,
         y = defaults.defense.y,
+        frameStrata = defaults.defense.frameStrata,
+        frameLevel = defaults.defense.frameLevel,
         entries = {},
     }
     settings.procs = {entries = {}}
+    settings.blacklist = {
+        enabled = false,
+        toggleKey = nil,
+        entries = {},
+    }
     settings.cooldownBox = nil
 
     state.editorSpellId = nil
@@ -1579,7 +1883,9 @@ local function resetToDefaults()
     state.defenseEditorColorIndex = 2
     state.procEditorSpellId = nil
     state.procEditorColorIndex = 2
+    state.blacklistEditorSpellId = nil
     state.searchText = ""
+    stopBindingListen()
     setPreview(nil)
 
     if searchInput then
@@ -1590,6 +1896,8 @@ local function resetToDefaults()
     applyPosition()
     applyDefenseSize()
     applyDefensePosition()
+    applyFrameLayers()
+    applyBlacklistBinding()
     sanitizeSettings()
     updateSpellState()
     refreshAllEditorViews()
@@ -1879,6 +2187,54 @@ local function createMainOptionsPanel(frame)
         updateEditorControls()
         refreshVisibility()
     end)
+
+    local layerLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    layerLabel:SetPoint("TOPLEFT", lockToggleButton, "BOTTOMLEFT", 0, -12)
+    layerLabel:SetText(L("FRAME_LAYER"))
+    frame.layerLabel = layerLabel
+
+    local strataDropdown = CreateFrame("Frame", addonName .. "MainStrataDropdown", placementColumn, "UIDropDownMenuTemplate")
+    strataDropdown:SetPoint("TOPLEFT", layerLabel, "BOTTOMLEFT", -16, -4)
+    UIDropDownMenu_SetWidth(strataDropdown, 160)
+    UIDropDownMenu_Initialize(strataDropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, strata in ipairs(FRAME_STRATA_LIST) do
+            info.text = strata
+            info.value = strata
+            info.func = function()
+                db().frameStrata = strata
+                UIDropDownMenu_SetSelectedValue(strataDropdown, strata)
+                UIDropDownMenu_SetText(strataDropdown, strata)
+                applyFrameLayers()
+            end
+            info.checked = (db().frameStrata or defaults.frameStrata) == strata
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+    UIDropDownMenu_SetSelectedValue(strataDropdown, db().frameStrata or defaults.frameStrata)
+    UIDropDownMenu_SetText(strataDropdown, db().frameStrata or defaults.frameStrata)
+    frame.mainStrataDropdown = strataDropdown
+
+    local levelHolder = createPlacementInput(placementColumn, L("FRAME_LEVEL"), 72, function(text)
+        local value = parseInteger(text)
+        if not value then
+            if frame.mainLevelInput then
+                frame.mainLevelInput:SetText(tostring(db().frameLevel or defaults.frameLevel))
+            end
+            return
+        end
+        db().frameLevel = Logic.sanitizeFrameLevel(value, defaults.frameLevel)
+        applyFrameLayers()
+        if frame.mainLevelInput then
+            frame.mainLevelInput:SetText(tostring(db().frameLevel))
+        end
+    end)
+    levelHolder:SetPoint("LEFT", strataDropdown, "RIGHT", 0, 8)
+    frame.mainLevelInput = levelHolder.input
+    frame.mainLevelHolder = levelHolder
+    if frame.mainLevelInput then
+        frame.mainLevelInput:SetText(tostring(db().frameLevel or defaults.frameLevel))
+    end
 end
 
 local function upsertPriorityEntry(listKey, spellId, colorIndex)
@@ -2106,8 +2462,57 @@ local function createDefenseOptionsPanel(frame)
     frame.defenseYInput = yHolder.input
     frame.defenseYHolder = yHolder
 
+    local layerLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    layerLabel:SetPoint("TOPLEFT", sizeHolder, "BOTTOMLEFT", 0, -10)
+    layerLabel:SetText(L("FRAME_LAYER"))
+    frame.defenseLayerLabel = layerLabel
+
+    local strataDropdown = CreateFrame("Frame", addonName .. "DefenseStrataDropdown", frame, "UIDropDownMenuTemplate")
+    strataDropdown:SetPoint("TOPLEFT", layerLabel, "BOTTOMLEFT", -16, -4)
+    UIDropDownMenu_SetWidth(strataDropdown, 160)
+    UIDropDownMenu_Initialize(strataDropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, strata in ipairs(FRAME_STRATA_LIST) do
+            info.text = strata
+            info.value = strata
+            info.func = function()
+                db().defense.frameStrata = strata
+                UIDropDownMenu_SetSelectedValue(strataDropdown, strata)
+                UIDropDownMenu_SetText(strataDropdown, strata)
+                applyFrameLayers()
+            end
+            info.checked = ((db().defense and db().defense.frameStrata) or defaults.defense.frameStrata) == strata
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+    local defenseStrata = (db().defense and db().defense.frameStrata) or defaults.defense.frameStrata
+    UIDropDownMenu_SetSelectedValue(strataDropdown, defenseStrata)
+    UIDropDownMenu_SetText(strataDropdown, defenseStrata)
+    frame.defenseStrataDropdown = strataDropdown
+
+    local dLevelHolder = createPlacementInput(frame, L("FRAME_LEVEL"), 72, function(text)
+        local value = parseInteger(text)
+        if not value then
+            if frame.defenseLevelInput then
+                frame.defenseLevelInput:SetText(tostring((db().defense and db().defense.frameLevel) or defaults.defense.frameLevel))
+            end
+            return
+        end
+        db().defense.frameLevel = Logic.sanitizeFrameLevel(value, defaults.defense.frameLevel)
+        applyFrameLayers()
+        if frame.defenseLevelInput then
+            frame.defenseLevelInput:SetText(tostring(db().defense.frameLevel))
+        end
+    end)
+    dLevelHolder:SetPoint("LEFT", strataDropdown, "RIGHT", 0, 8)
+    frame.defenseLevelInput = dLevelHolder.input
+    frame.defenseLevelHolder = dLevelHolder
+    if frame.defenseLevelInput then
+        frame.defenseLevelInput:SetText(tostring((db().defense and db().defense.frameLevel) or defaults.defense.frameLevel))
+    end
+
     local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    editorLabel:SetPoint("TOPLEFT", sizeHolder, "BOTTOMLEFT", 0, -12)
+    editorLabel:SetPoint("TOPLEFT", layerLabel, "BOTTOMLEFT", 0, -40)
     editorLabel:SetText(L("DEFENSE_ADD"))
     frame.defenseEditorLabel = editorLabel
 
@@ -2215,8 +2620,238 @@ local function createDefenseOptionsPanel(frame)
             if frame.defenseYInput then
                 frame.defenseYInput:SetText(tostring(db().defense.y or defaults.defense.y))
             end
+            if frame.defenseLevelInput then
+                frame.defenseLevelInput:SetText(tostring(db().defense.frameLevel or defaults.defense.frameLevel))
+            end
+            if frame.defenseStrataDropdown then
+                local strata = db().defense.frameStrata or defaults.defense.frameStrata
+                UIDropDownMenu_SetSelectedValue(frame.defenseStrataDropdown, strata)
+                UIDropDownMenu_SetText(frame.defenseStrataDropdown, strata)
+            end
         end
         bindPriorityRows(defenseRows, defenseScrollFrame, emptyDefenseText, "defense", updateDefenseRows)
+    end
+end
+
+local function createBlacklistOptionsPanel(frame)
+    local contentWidth = frame:GetWidth() - 24
+
+    local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    title:SetPoint("TOPLEFT", 8, -4)
+    title:SetText(L("BLACKLIST_TITLE"))
+    frame.blacklistTitle = title
+
+    local subtitle = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    subtitle:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
+    subtitle:SetWidth(contentWidth)
+    subtitle:SetJustifyH("LEFT")
+    subtitle:SetText(L("BLACKLIST_SUBTITLE"))
+    frame.blacklistSubtitle = subtitle
+
+    local enableCheck = CreateFrame("CheckButton", addonName .. "BlacklistEnable", frame, "UICheckButtonTemplate")
+    enableCheck:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -10)
+    enableCheck.text:SetText(L("BLACKLIST_ENABLE"))
+    enableCheck:SetScript("OnClick", function(self)
+        setBlacklistEnabled(self:GetChecked() and true or false, true)
+    end)
+    frame.blacklistEnable = enableCheck
+
+    local keyLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    keyLabel:SetPoint("TOPLEFT", enableCheck, "BOTTOMLEFT", 0, -10)
+    keyLabel:SetText(L("BLACKLIST_TOGGLE_KEY"))
+    frame.blacklistKeyLabel = keyLabel
+
+    local keyValue = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    keyValue:SetPoint("LEFT", keyLabel, "RIGHT", 10, 0)
+    keyValue:SetWidth(220)
+    keyValue:SetJustifyH("LEFT")
+    frame.blacklistKeyValue = keyValue
+
+    local bindButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    bindButton:SetSize(100, 22)
+    bindButton:SetPoint("TOPLEFT", keyLabel, "BOTTOMLEFT", 0, -8)
+    bindButton:SetText(L("BLACKLIST_BIND"))
+    bindButton:SetScript("OnClick", function()
+        if state.bindingListen then
+            stopBindingListen()
+        else
+            startBindingListen()
+        end
+    end)
+    frame.blacklistBindButton = bindButton
+
+    local clearButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    clearButton:SetSize(80, 22)
+    clearButton:SetPoint("LEFT", bindButton, "RIGHT", 8, 0)
+    clearButton:SetText(L("BLACKLIST_CLEAR_KEY"))
+    clearButton:SetScript("OnClick", function()
+        getBlacklistSettings().toggleKey = nil
+        stopBindingListen()
+        applyBlacklistBinding()
+        updateBlacklistRows()
+    end)
+    frame.blacklistClearButton = clearButton
+
+    local bindHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bindHint:SetPoint("TOPLEFT", bindButton, "BOTTOMLEFT", 0, -6)
+    bindHint:SetWidth(contentWidth)
+    bindHint:SetJustifyH("LEFT")
+    bindHint:SetText(L("BLACKLIST_BIND_HINT"))
+    frame.blacklistBindHint = bindHint
+
+    local filterHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    filterHint:SetPoint("TOPLEFT", bindHint, "BOTTOMLEFT", 0, -8)
+    filterHint:SetWidth(contentWidth)
+    filterHint:SetJustifyH("LEFT")
+    filterHint:SetText(L("BLACKLIST_HINT"))
+    frame.blacklistFilterHint = filterHint
+
+    local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    editorLabel:SetPoint("TOPLEFT", filterHint, "BOTTOMLEFT", 0, -12)
+    editorLabel:SetText(L("BLACKLIST_ADD"))
+    frame.blacklistEditorLabel = editorLabel
+
+    local editorRow = CreateFrame("Frame", nil, frame)
+    editorRow:SetSize(contentWidth, 36)
+    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -4)
+
+    local spellDropdown = CreateFrame("Frame", addonName .. "BlacklistSpellDropdown", editorRow, "UIDropDownMenuTemplate")
+    spellDropdown:SetPoint("LEFT", 0, -2)
+    UIDropDownMenu_SetWidth(spellDropdown, 320)
+    UIDropDownMenu_Initialize(spellDropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, spellInfo in ipairs(getFilteredAvailableSpells("")) do
+            info.text = spellInfo.name
+            info.value = spellInfo.spellId
+            info.func = function()
+                state.blacklistEditorSpellId = spellInfo.spellId
+                UIDropDownMenu_SetSelectedValue(spellDropdown, spellInfo.spellId)
+                UIDropDownMenu_SetText(spellDropdown, spellInfo.name)
+            end
+            info.checked = state.blacklistEditorSpellId == spellInfo.spellId
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+
+    local addButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
+    addButton:SetSize(90, 22)
+    addButton:SetPoint("LEFT", spellDropdown, "RIGHT", 4, 2)
+    addButton:SetText(L("ADD"))
+    addButton:SetScript("OnClick", function()
+        local spellId = state.blacklistEditorSpellId
+        if not spellId then
+            return
+        end
+        local blacklist = getBlacklistSettings()
+        for _, entry in ipairs(blacklist.entries) do
+            if entry.spellId == spellId then
+                entry.enabled = true
+                updateBlacklistRows()
+                updateSpellState()
+                return
+            end
+        end
+        table.insert(blacklist.entries, {spellId = spellId, enabled = true})
+        sanitizeSettings()
+        updateBlacklistRows()
+        updateSpellState()
+    end)
+    frame.blacklistAddButton = addButton
+
+    local listLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    listLabel:SetPoint("TOPLEFT", editorRow, "BOTTOMLEFT", 0, -12)
+    listLabel:SetText(L("BLACKLIST_LIST"))
+    frame.blacklistListLabel = listLabel
+
+    blacklistScrollFrame = CreateFrame("ScrollFrame", addonName .. "BlacklistScroll", frame, "FauxScrollFrameTemplate")
+    blacklistScrollFrame:SetPoint("TOPLEFT", listLabel, "BOTTOMLEFT", 0, -6)
+    blacklistScrollFrame:SetSize(contentWidth - 10, PRIORITY_VISIBLE_ROWS * PRIORITY_ROW_HEIGHT)
+    blacklistScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
+        FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateBlacklistRows)
+    end)
+
+    for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+        local row = CreateFrame("Frame", nil, frame)
+        row:SetSize(contentWidth - 24, PRIORITY_ROW_HEIGHT)
+        if rowIndex == 1 then
+            row:SetPoint("TOPLEFT", blacklistScrollFrame, "TOPLEFT", 0, 0)
+        else
+            row:SetPoint("TOPLEFT", blacklistRows[rowIndex - 1], "BOTTOMLEFT", 0, 0)
+        end
+        row.enable = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+        row.enable:SetPoint("LEFT", 0, 0)
+        row.enable:SetSize(24, 24)
+        row.spellText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        row.spellText:SetPoint("LEFT", row.enable, "RIGHT", 8, 0)
+        row.spellText:SetWidth(420)
+        row.spellText:SetJustifyH("LEFT")
+        row.deleteButton = CreateFrame("Button", nil, row, "GameMenuButtonTemplate")
+        row.deleteButton:SetSize(70, 20)
+        row.deleteButton:SetPoint("RIGHT", 0, 0)
+        row.deleteButton:SetText(L("DELETE"))
+        row:Hide()
+        blacklistRows[rowIndex] = row
+    end
+
+    emptyBlacklistText = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    emptyBlacklistText:SetPoint("TOPLEFT", blacklistScrollFrame, "TOPLEFT", 8, -30)
+    emptyBlacklistText:SetWidth(contentWidth - 40)
+    emptyBlacklistText:SetJustifyH("LEFT")
+    emptyBlacklistText:SetText(L("BLACKLIST_EMPTY"))
+    emptyBlacklistText:Hide()
+
+    updateBlacklistRows = function()
+        local blacklist = getBlacklistSettings()
+        if frame.blacklistEnable then
+            frame.blacklistEnable:SetChecked(blacklist.enabled == true)
+        end
+        if frame.blacklistKeyValue then
+            if state.bindingListen then
+                frame.blacklistKeyValue:SetText(L("BLACKLIST_LISTENING"))
+            else
+                frame.blacklistKeyValue:SetText(formatBindingKey(blacklist.toggleKey))
+            end
+        end
+        if frame.blacklistBindButton then
+            frame.blacklistBindButton:SetText(state.bindingListen and L("BLACKLIST_LISTENING") or L("BLACKLIST_BIND"))
+        end
+
+        local entries = blacklist.entries or {}
+        local total = #entries
+        local offset = 0
+        if blacklistScrollFrame then
+            FauxScrollFrame_Update(blacklistScrollFrame, total, PRIORITY_VISIBLE_ROWS, PRIORITY_ROW_HEIGHT)
+            offset = FauxScrollFrame_GetOffset(blacklistScrollFrame)
+        end
+        for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+            local row = blacklistRows[rowIndex]
+            local entry = entries[offset + rowIndex]
+            if entry then
+                local entryIndex = offset + rowIndex
+                row:Show()
+                row.enable:SetChecked(entry.enabled ~= false)
+                row.spellText:SetText(getSpellNameSafe(entry.spellId))
+                row.deleteButton:SetText(L("DELETE"))
+                row.enable:SetScript("OnClick", function(self)
+                    entry.enabled = self:GetChecked() and true or false
+                    updateSpellState()
+                end)
+                row.deleteButton:SetScript("OnClick", function()
+                    table.remove(entries, entryIndex)
+                    updateBlacklistRows()
+                    updateSpellState()
+                end)
+            else
+                row:Hide()
+            end
+        end
+        if emptyBlacklistText then
+            if total == 0 then
+                emptyBlacklistText:Show()
+            else
+                emptyBlacklistText:Hide()
+            end
+        end
     end
 end
 
@@ -2389,6 +3024,8 @@ selectOptionsTab = function(tabKey)
         updateDefenseRows()
     elseif tabKey == "procs" and updateProcRows then
         updateProcRows()
+    elseif tabKey == "blacklist" and updateBlacklistRows then
+        updateBlacklistRows()
     elseif tabKey == "main" then
         updateMappingRows()
         updateEditorControls()
@@ -2404,6 +3041,9 @@ refreshOptionsLocale = function()
         optionsTabs.main:SetText(L("TAB_MAIN"))
         optionsTabs.defense:SetText(L("TAB_DEFENSE"))
         optionsTabs.procs:SetText(L("TAB_PROCS"))
+        if optionsTabs.blacklist then
+            optionsTabs.blacklist:SetText(L("TAB_BLACKLIST"))
+        end
     end
     if options.resetButton then
         options.resetButton:SetText(L("RESET_DEFAULTS"))
@@ -2443,6 +3083,10 @@ refreshOptionsLocale = function()
         if main.overridesLabel then main.overridesLabel:SetText(L("STATE_OVERRIDES")) end
         if main.overridesHint then main.overridesHint:SetText(L("STATE_OVERRIDES_HINT")) end
         if main.placementLabel then main.placementLabel:SetText(L("INDICATOR")) end
+        if main.layerLabel then main.layerLabel:SetText(L("FRAME_LAYER")) end
+        if main.mainLevelHolder and main.mainLevelHolder.label then
+            main.mainLevelHolder.label:SetText(L("FRAME_LEVEL"))
+        end
         if main.sizeHolder and main.sizeHolder.label then main.sizeHolder.label:SetText(L("SIZE")) end
         if main.xHolder and main.xHolder.label then main.xHolder.label:SetText(L("X")) end
         if main.yHolder and main.yHolder.label then main.yHolder.label:SetText(L("Y")) end
@@ -2474,6 +3118,10 @@ refreshOptionsLocale = function()
             defense.defenseLock.text:SetText(L("DEFENSE_LOCKED"))
         end
         if defense.defensePlacementLabel then defense.defensePlacementLabel:SetText(L("DEFENSE_PLACEMENT")) end
+        if defense.defenseLayerLabel then defense.defenseLayerLabel:SetText(L("FRAME_LAYER")) end
+        if defense.defenseLevelHolder and defense.defenseLevelHolder.label then
+            defense.defenseLevelHolder.label:SetText(L("FRAME_LEVEL"))
+        end
         if defense.defenseSizeHolder and defense.defenseSizeHolder.label then
             defense.defenseSizeHolder.label:SetText(L("SIZE"))
         end
@@ -2503,6 +3151,24 @@ refreshOptionsLocale = function()
         if emptyProcText then emptyProcText:SetText(L("PROCS_EMPTY")) end
     end
 
+    local blacklist = optionsPanels.blacklist
+    if blacklist then
+        if blacklist.blacklistTitle then blacklist.blacklistTitle:SetText(L("BLACKLIST_TITLE")) end
+        if blacklist.blacklistSubtitle then blacklist.blacklistSubtitle:SetText(L("BLACKLIST_SUBTITLE")) end
+        if blacklist.blacklistEnable and blacklist.blacklistEnable.text then
+            blacklist.blacklistEnable.text:SetText(L("BLACKLIST_ENABLE"))
+        end
+        if blacklist.blacklistKeyLabel then blacklist.blacklistKeyLabel:SetText(L("BLACKLIST_TOGGLE_KEY")) end
+        if blacklist.blacklistBindButton then blacklist.blacklistBindButton:SetText(L("BLACKLIST_BIND")) end
+        if blacklist.blacklistClearButton then blacklist.blacklistClearButton:SetText(L("BLACKLIST_CLEAR_KEY")) end
+        if blacklist.blacklistBindHint then blacklist.blacklistBindHint:SetText(L("BLACKLIST_BIND_HINT")) end
+        if blacklist.blacklistFilterHint then blacklist.blacklistFilterHint:SetText(L("BLACKLIST_HINT")) end
+        if blacklist.blacklistEditorLabel then blacklist.blacklistEditorLabel:SetText(L("BLACKLIST_ADD")) end
+        if blacklist.blacklistListLabel then blacklist.blacklistListLabel:SetText(L("BLACKLIST_LIST")) end
+        if blacklist.blacklistAddButton then blacklist.blacklistAddButton:SetText(L("ADD")) end
+        if emptyBlacklistText then emptyBlacklistText:SetText(L("BLACKLIST_EMPTY")) end
+    end
+
     updateEditorControls()
     updateCurrentSpellText()
     if updateMappingRows then
@@ -2513,6 +3179,9 @@ refreshOptionsLocale = function()
     end
     if updateProcRows then
         updateProcRows()
+    end
+    if updateBlacklistRows then
+        updateBlacklistRows()
     end
 end
 
@@ -2587,6 +3256,7 @@ local function attachOptionsLifecycle(frame)
 
     frame:SetScript("OnHide", function()
         state.optionsOpen = false
+        stopBindingListen()
         setPreview(nil)
         refreshVisibility()
     end)
@@ -2612,11 +3282,12 @@ local function createOptionsWindow()
     end
 
     local tabY = -28
-    local tabWidth = 100
-    local function makeTab(key, labelKey, x)
+    local tabWidth = 88
+    local tabGap = 4
+    local function makeTab(key, labelKey, index)
         local button = CreateFrame("Button", nil, options, "GameMenuButtonTemplate")
         button:SetSize(tabWidth, 22)
-        button:SetPoint("TOPLEFT", 14 + x, tabY)
+        button:SetPoint("TOPLEFT", 14 + index * (tabWidth + tabGap), tabY)
         button:SetText(L(labelKey))
         button:SetScript("OnClick", function()
             selectOptionsTab(key)
@@ -2625,8 +3296,9 @@ local function createOptionsWindow()
         return button
     end
     makeTab("main", "TAB_MAIN", 0)
-    makeTab("defense", "TAB_DEFENSE", tabWidth + 6)
-    makeTab("procs", "TAB_PROCS", (tabWidth + 6) * 2)
+    makeTab("defense", "TAB_DEFENSE", 1)
+    makeTab("procs", "TAB_PROCS", 2)
+    makeTab("blacklist", "TAB_BLACKLIST", 3)
 
     local panelTop = -56
     local panelHeight = OPTIONS_HEIGHT - 112
@@ -2651,6 +3323,13 @@ local function createOptionsWindow()
     createProcOptionsPanel(procPanel)
     procPanel:Hide()
     optionsPanels.procs = procPanel
+
+    local blacklistPanel = CreateFrame("Frame", nil, options)
+    blacklistPanel:SetPoint("TOPLEFT", 14, panelTop)
+    blacklistPanel:SetSize(panelWidth, panelHeight)
+    createBlacklistOptionsPanel(blacklistPanel)
+    blacklistPanel:Hide()
+    optionsPanels.blacklist = blacklistPanel
 
     createOptionsFooter(options)
     attachOptionsLifecycle(options)
@@ -2849,6 +3528,7 @@ local function printUsage()
     print(L("CMD_SIZE"))
     print(L("CMD_RESET"))
     print(L("CMD_LANG"))
+    print(L("CMD_BLACKLIST"))
 end
 
 SLASH_SHINKILI1 = "/shinkili"
@@ -2952,6 +3632,22 @@ SlashCmdList.SHINKILI = function(msg)
         return
     end
 
+    if command == "blacklist" then
+        local normalized = trim(value):lower()
+        if normalized == "on" then
+            setBlacklistEnabled(true, true)
+            print("|cff33ff99Shinkili|r " .. L("MSG_BLACKLIST_ON"))
+            return
+        end
+        if normalized == "off" then
+            setBlacklistEnabled(false, true)
+            print("|cff33ff99Shinkili|r " .. L("MSG_BLACKLIST_OFF"))
+            return
+        end
+        print("|cff33ff99Shinkili|r " .. L("MSG_BLACKLIST_USAGE"))
+        return
+    end
+
     if command == "reset" then
         resetToDefaults()
         print("|cff33ff99Shinkili|r " .. L("MSG_RESET"))
@@ -2977,6 +3673,8 @@ local function initialize()
     ShinkiliDB.showMarker = ShinkiliDB.showMarker == nil and defaults.showMarker or ShinkiliDB.showMarker
     ShinkiliDB.showMinimapButton = ShinkiliDB.showMinimapButton == nil and defaults.showMinimapButton or ShinkiliDB.showMinimapButton
     ShinkiliDB.minimapAngle = ShinkiliDB.minimapAngle == nil and defaults.minimapAngle or ShinkiliDB.minimapAngle
+    ShinkiliDB.frameStrata = ShinkiliDB.frameStrata == nil and defaults.frameStrata or ShinkiliDB.frameStrata
+    ShinkiliDB.frameLevel = ShinkiliDB.frameLevel == nil and defaults.frameLevel or ShinkiliDB.frameLevel
     ShinkiliDB.overrides = type(ShinkiliDB.overrides) == "table" and ShinkiliDB.overrides or copyDefaultOverrides()
     ShinkiliDB.mappings = type(ShinkiliDB.mappings) == "table" and ShinkiliDB.mappings or {}
     ShinkiliDB.defense = type(ShinkiliDB.defense) == "table" and ShinkiliDB.defense or {
@@ -2987,9 +3685,16 @@ local function initialize()
         relativePoint = defaults.defense.relativePoint,
         x = defaults.defense.x,
         y = defaults.defense.y,
+        frameStrata = defaults.defense.frameStrata,
+        frameLevel = defaults.defense.frameLevel,
         entries = {},
     }
     ShinkiliDB.procs = type(ShinkiliDB.procs) == "table" and ShinkiliDB.procs or {entries = {}}
+    ShinkiliDB.blacklist = type(ShinkiliDB.blacklist) == "table" and ShinkiliDB.blacklist or {
+        enabled = false,
+        toggleKey = nil,
+        entries = {},
+    }
     ShinkiliDB.cooldownBox = nil
 
     refreshAvailableSpells()
@@ -2998,6 +3703,8 @@ local function initialize()
     applyPosition()
     applyDefenseSize()
     applyDefensePosition()
+    applyFrameLayers()
+    applyBlacklistBinding()
     syncPlacementControls()
     updateSpellState()
     refreshMinimapButton()

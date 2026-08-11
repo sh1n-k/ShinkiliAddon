@@ -156,6 +156,27 @@ check("copyDefaultOverrides independent", (function()
     return defaultOverrides.casting.enabled == true
 end)())
 
+check("frame strata valid", Logic.sanitizeFrameStrata("DIALOG", "MEDIUM") == "DIALOG")
+check("frame strata fallback", Logic.sanitizeFrameStrata("NOPE", "HIGH") == "HIGH")
+check("frame level clamp", Logic.sanitizeFrameLevel(0, 50) == 1)
+
+local bl = Logic.sanitizeBlacklistEntries({
+    {spellId = 7, enabled = true},
+    {spellId = 7, enabled = false},
+    {spellId = 8, enabled = false},
+    9,
+    -1,
+})
+check("blacklist unique", #bl == 3)
+check("blacklist disabled kept", bl[2].enabled == false)
+check("blacklist filter off ignores", Logic.isSpellBlacklisted(bl, 7, false) == false)
+check("blacklist enabled hits", Logic.isSpellBlacklisted(bl, 7, true) == true)
+check("blacklist disabled entry skipped", Logic.isSpellBlacklisted(bl, 8, true) == false)
+-- 8 is present but entry.enabled=false → not filtered; chosen over 9
+check("pick recommended skips blacklisted", Logic.pickRecommendedSpell(7, {8, 9}, bl, true) == 8)
+check("pick recommended when filter off", Logic.pickRecommendedSpell(7, {9}, bl, false) == 7)
+check("pick all blacklisted yields nil", Logic.pickRecommendedSpell(7, {7, 9}, bl, true) == nil)
+
 if failures > 0 then
     print(string.format("%d failure(s)", failures))
     os.exit(1)

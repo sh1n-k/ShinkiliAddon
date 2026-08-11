@@ -25,6 +25,35 @@ function Logic.normalizeLocale(locale)
     return "en"
 end
 
+local VALID_FRAME_STRATA = {
+    BACKGROUND = true,
+    LOW = true,
+    MEDIUM = true,
+    HIGH = true,
+    DIALOG = true,
+    FULLSCREEN = true,
+    FULLSCREEN_DIALOG = true,
+    TOOLTIP = true,
+}
+
+function Logic.sanitizeFrameStrata(strata, defaultStrata)
+    if type(strata) == "string" and VALID_FRAME_STRATA[strata] then
+        return strata
+    end
+    if type(defaultStrata) == "string" and VALID_FRAME_STRATA[defaultStrata] then
+        return defaultStrata
+    end
+    return "FULLSCREEN_DIALOG"
+end
+
+function Logic.sanitizeFrameLevel(level, defaultLevel)
+    local numeric = tonumber(level)
+    if not numeric then
+        numeric = tonumber(defaultLevel) or 100
+    end
+    return Logic.clamp(math.floor(numeric + 0.5), 1, 10000)
+end
+
 function Logic.parseInteger(text)
     local value = tonumber(text)
     if not value then
@@ -256,6 +285,28 @@ function Logic.sanitizeSettings(settings, config)
         config.colorPaletteSize
     )
 
+    local frameDefaults = config.frameDefaults or {}
+    settings.frameStrata = Logic.sanitizeFrameStrata(settings.frameStrata, frameDefaults.frameStrata)
+    settings.frameLevel = Logic.sanitizeFrameLevel(settings.frameLevel, frameDefaults.frameLevel)
+
+    settings.defense.frameStrata = Logic.sanitizeFrameStrata(
+        settings.defense.frameStrata,
+        frameDefaults.defenseFrameStrata or frameDefaults.frameStrata
+    )
+    settings.defense.frameLevel = Logic.sanitizeFrameLevel(
+        settings.defense.frameLevel,
+        frameDefaults.defenseFrameLevel or ((frameDefaults.frameLevel or 200) - 10)
+    )
+
+    settings.blacklist = type(settings.blacklist) == "table" and settings.blacklist or {}
+    settings.blacklist.enabled = settings.blacklist.enabled == true
+    if type(settings.blacklist.toggleKey) ~= "string" or settings.blacklist.toggleKey == "" then
+        settings.blacklist.toggleKey = nil
+    else
+        settings.blacklist.toggleKey = settings.blacklist.toggleKey
+    end
+    settings.blacklist.entries = Logic.sanitizeBlacklistEntries(settings.blacklist.entries)
+
     return settings
 end
 
@@ -317,6 +368,81 @@ function Logic.pickPriorityEntry(entries, activeSet)
             return entry
         end
     end
+    return nil
+end
+
+--- Blacklist list: {spellId, enabled}. Order preserved, unique spellId.
+function Logic.sanitizeBlacklistEntries(entries)
+    local migrated = {}
+    local usedSpell = {}
+    if type(entries) ~= "table" then
+        return migrated
+    end
+
+    for index = 1, #entries do
+        local raw = entries[index]
+        if type(raw) == "table" then
+            local spellId = tonumber(raw.spellId)
+            if spellId and spellId > 0 then
+                spellId = math.floor(spellId + 0.5)
+                if not usedSpell[spellId] then
+                    table.insert(migrated, {
+                        spellId = spellId,
+                        enabled = raw.enabled ~= false,
+                    })
+                    usedSpell[spellId] = true
+                end
+            end
+        elseif tonumber(raw) and tonumber(raw) > 0 then
+            local spellId = math.floor(tonumber(raw) + 0.5)
+            if not usedSpell[spellId] then
+                table.insert(migrated, {spellId = spellId, enabled = true})
+                usedSpell[spellId] = true
+            end
+        end
+    end
+
+    return migrated
+end
+
+function Logic.isSpellBlacklisted(entries, spellId, filterEnabled)
+    if filterEnabled == false then
+        return false
+    end
+    if not spellId or type(entries) ~= "table" then
+        return false
+    end
+    spellId = tonumber(spellId)
+    if not spellId then
+        return false
+    end
+    for _, entry in ipairs(entries) do
+        if entry.enabled ~= false and tonumber(entry.spellId) == spellId then
+            return true
+        end
+    end
+    return false
+end
+
+--- Pick first non-blacklisted id from primary + candidates list.
+function Logic.pickRecommendedSpell(primarySpellId, candidateList, entries, filterEnabled)
+    if not filterEnabled then
+        return primarySpellId
+    end
+
+    if primarySpellId and not Logic.isSpellBlacklisted(entries, primarySpellId, true) then
+        return primarySpellId
+    end
+
+    if type(candidateList) == "table" then
+        for _, spellId in ipairs(candidateList) do
+            local id = tonumber(spellId)
+            if id and id > 0 and not Logic.isSpellBlacklisted(entries, id, true) then
+                return id
+            end
+        end
+    end
+
     return nil
 end
 

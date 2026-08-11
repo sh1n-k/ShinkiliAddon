@@ -20,9 +20,11 @@
 - Important keys: `mappings`, `overrides`, `defense` (entries + box placement), `procs.entries`, `locale` (`en`/`ko`), minimap fields, main indicator placement.
 
 ## Runtime model
-- **Main box**: AC `GetNextCastSpell` → mapping color; active **proc** (priority list + overlay) overrides spell/color; cast/channel/empower reserved overrides apply when not on proc/preview.
-- **Defense box**: separate frame; shows highest-priority **usable** defense entry color.
-- **Options**: tabs Main / Defense / Procs; language on Main; minimap button toggles options.
+- **Main box**: AC recommendation (with optional **blacklist** skip to next candidate) → mapping color; active **proc** overrides spell/color; cast/channel/empower overrides when not on proc/preview.
+- **Defense box**: separate frame; highest-priority **usable** defense entry color.
+- **Layers**: per-box `frameStrata` + `frameLevel` (options on Main / Defense).
+- **Blacklist**: tab + filter toggle; capture keybind (key/mouse/wheel) via override binding; center toast on toggle.
+- **Options tabs**: Main / Defense / Procs / Blacklist; language + minimap in footer.
 
 ## Git Safety
 - Small doc/metadata-only changes may land on `main`.
