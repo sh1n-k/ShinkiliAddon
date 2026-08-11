@@ -74,6 +74,10 @@ Open the addon settings.
 /sk
 ```
 
+미니맵 버튼(좌클릭)으로도 설정 창을 열 수 있습니다. 숨긴 경우 `/sk minimap on`으로 복구합니다.
+
+You can also open settings from the minimap button (left-click). Restore a hidden button with `/sk minimap on`.
+
 <a id="notes"></a>
 ## 비고 Notes
 

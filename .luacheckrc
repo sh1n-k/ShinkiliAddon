@@ -17,6 +17,9 @@ globals = {
 read_globals = {
     "CreateFrame",
     "UIParent",
+    "Minimap",
+    "GameTooltip",
+    "GetCursorPosition",
     "C_AssistedCombat",
     "C_Spell",
     "C_SpellBook",

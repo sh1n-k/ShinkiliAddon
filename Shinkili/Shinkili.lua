@@ -15,6 +15,8 @@ local defaults = {
     x = 0,
     y = -120,
     showMarker = true,
+    showMinimapButton = true,
+    minimapAngle = 220,
     overrides = {
         casting = {enabled = true, colorIndex = 1},
         channeling = {enabled = true, colorIndex = 2},
@@ -181,6 +183,8 @@ label:SetShadowOffset(1, -1)
 label:SetShadowColor(0, 0, 0, 0.9)
 
 local options
+local minimapButton
+local minimapSizeHooked = false
 local currentSpellText
 local searchInput
 local sizeInput
@@ -207,6 +211,7 @@ local updateEditorControls
 local updateMappingRows
 local syncPlacementControls
 local updateCooldownSpiral
+local refreshMinimapButton
 
 local function db()
     return ShinkiliDB
@@ -1314,6 +1319,8 @@ local function resetToDefaults()
     settings.size = defaults.size
     settings.locked = defaults.locked
     settings.showMarker = defaults.showMarker
+    settings.showMinimapButton = defaults.showMinimapButton
+    settings.minimapAngle = defaults.minimapAngle
     settings.overrides = copyDefaultOverrides()
     settings.mappings = {}
     settings.cooldownBox = nil
@@ -1334,6 +1341,7 @@ local function resetToDefaults()
     updateSpellState()
     refreshAllEditorViews()
     refreshVisibility()
+    refreshMinimapButton()
 end
 
 local function createMainOptionsPanel(frame)
@@ -1645,12 +1653,195 @@ local function createOptionsWindow()
     attachOptionsLifecycle(options)
 end
 
+local function toggleOptionsWindow()
+    if not options then
+        createOptionsWindow()
+    end
+    if options:IsShown() then
+        options:Hide()
+    else
+        options:Show()
+    end
+end
+
+local function normalizeMinimapAngle(angle)
+    local numeric = tonumber(angle)
+    if not numeric then
+        return defaults.minimapAngle
+    end
+    numeric = numeric % 360
+    if numeric < 0 then
+        numeric = numeric + 360
+    end
+    return numeric
+end
+
+local function angleFromDelta(dx, dy)
+    -- WoW exposes math.atan2; pure Lua 5.3+ uses math.atan(y, x).
+    local atan2 = rawget(math, "atan2")
+    if atan2 then
+        return atan2(dy, dx)
+    end
+    return math.atan(dy, dx)
+end
+
+local function applyMinimapButtonPosition()
+    if not minimapButton or not Minimap then
+        return
+    end
+
+    local angle = math.rad(normalizeMinimapAngle(db().minimapAngle))
+    local radius = (Minimap:GetWidth() / 2) + 5
+    local x = math.cos(angle) * radius
+    local y = math.sin(angle) * radius
+    minimapButton:ClearAllPoints()
+    minimapButton:SetPoint("CENTER", Minimap, "CENTER", x, y)
+end
+
+local function createMinimapButton()
+    if minimapButton or not Minimap then
+        return
+    end
+
+    local button = CreateFrame("Button", "ShinkiliMinimapButton", Minimap)
+    button:SetSize(31, 31)
+    button:SetFrameStrata("MEDIUM")
+    button:SetFrameLevel(Minimap:GetFrameLevel() + 8)
+    button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    button:RegisterForDrag("LeftButton")
+    button:SetMovable(true)
+
+    local background = button:CreateTexture(nil, "BACKGROUND")
+    background:SetSize(18, 18)
+    background:SetPoint("CENTER", 0, 1)
+    background:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+
+    -- Signal-square identity (matches main indicator look) without an extra mouse frame.
+    local iconBorder = button:CreateTexture(nil, "ARTWORK")
+    iconBorder:SetSize(16, 16)
+    iconBorder:SetPoint("CENTER", 0, 1)
+    iconBorder:SetTexture("Interface\\Buttons\\WHITE8X8")
+    iconBorder:SetVertexColor(0.05, 0.05, 0.05, 0.95)
+
+    local icon = button:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(12, 12)
+    icon:SetPoint("CENTER", 0, 1)
+    icon:SetTexture("Interface\\Buttons\\WHITE8X8")
+    icon:SetVertexColor(0.00, 0.85, 0.25, 1)
+
+    local border = button:CreateTexture(nil, "OVERLAY")
+    border:SetSize(53, 53)
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    border:SetPoint("TOPLEFT", -10, 10)
+
+    button.isDragging = false
+
+    button:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+        GameTooltip:AddLine("Shinkili", 0.2, 1.0, 0.6)
+        GameTooltip:AddLine("Left-click: Toggle settings", 1, 1, 1)
+        GameTooltip:AddLine("Drag: Move button", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Right-click: Hide button", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("Restore with /sk minimap on", 0.65, 0.65, 0.65)
+        GameTooltip:Show()
+    end)
+
+    button:SetScript("OnLeave", function()
+        GameTooltip:Hide()
+    end)
+
+    button:SetScript("OnDragStart", function(self)
+        self.isDragging = true
+        self:LockHighlight()
+        GameTooltip:Hide()
+        self:SetScript("OnUpdate", function()
+            if not Minimap then
+                return
+            end
+            local scale = Minimap:GetEffectiveScale()
+            local cursorX, cursorY = GetCursorPosition()
+            cursorX = cursorX / scale
+            cursorY = cursorY / scale
+            local centerX, centerY = Minimap:GetCenter()
+            if not centerX or not centerY then
+                return
+            end
+            db().minimapAngle = normalizeMinimapAngle(math.deg(angleFromDelta(cursorX - centerX, cursorY - centerY)))
+            applyMinimapButtonPosition()
+        end)
+    end)
+
+    button:SetScript("OnDragStop", function(self)
+        self:SetScript("OnUpdate", nil)
+        self:UnlockHighlight()
+        applyMinimapButtonPosition()
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0, function()
+                self.isDragging = false
+            end)
+        else
+            self.isDragging = false
+        end
+    end)
+
+    button:SetScript("OnClick", function(self, mouseButton)
+        if self.isDragging then
+            return
+        end
+        if mouseButton == "LeftButton" then
+            toggleOptionsWindow()
+            return
+        end
+        if mouseButton == "RightButton" then
+            db().showMinimapButton = false
+            refreshMinimapButton()
+            print("|cff33ff99Shinkili|r minimap button hidden. Use /sk minimap on to restore.")
+        end
+    end)
+
+    minimapButton = button
+
+    if not minimapSizeHooked then
+        minimapSizeHooked = true
+        Minimap:HookScript("OnSizeChanged", function()
+            applyMinimapButtonPosition()
+        end)
+    end
+end
+
+refreshMinimapButton = function()
+    local settings = db()
+    if not settings then
+        return
+    end
+
+    settings.minimapAngle = normalizeMinimapAngle(settings.minimapAngle)
+    settings.showMinimapButton = settings.showMinimapButton ~= false
+
+    if not settings.showMinimapButton then
+        if minimapButton then
+            minimapButton:Hide()
+        end
+        return
+    end
+
+    createMinimapButton()
+    if not minimapButton then
+        return
+    end
+
+    applyMinimapButtonPosition()
+    minimapButton:Show()
+end
+
 local function printUsage()
     print("|cff33ff99Shinkili|r commands:")
     print("/shinkili or /sk - Open settings")
     print("/sk lock - Lock the square")
     print("/sk unlock - Unlock and show move preview")
     print("/sk marker on|off - Show or hide the helper marker")
+    print("/sk minimap on|off - Show or hide the minimap button")
     print("/sk size <number> - Set main square size")
     print("/sk reset - Reset defaults")
 end
@@ -1663,14 +1854,7 @@ SlashCmdList.SHINKILI = function(msg)
     command = command and command:lower() or ""
 
     if command == "" then
-        if not options then
-            createOptionsWindow()
-        end
-        if options:IsShown() then
-            options:Hide()
-        else
-            options:Show()
-        end
+        toggleOptionsWindow()
         return
     end
 
@@ -1724,6 +1908,24 @@ SlashCmdList.SHINKILI = function(msg)
         return
     end
 
+    if command == "minimap" then
+        local normalized = trim(value):lower()
+        if normalized == "on" then
+            db().showMinimapButton = true
+            refreshMinimapButton()
+            print("|cff33ff99Shinkili|r minimap button shown.")
+            return
+        end
+        if normalized == "off" then
+            db().showMinimapButton = false
+            refreshMinimapButton()
+            print("|cff33ff99Shinkili|r minimap button hidden.")
+            return
+        end
+        print("|cff33ff99Shinkili|r usage: /sk minimap on|off")
+        return
+    end
+
     if command == "reset" then
         resetToDefaults()
         print("|cff33ff99Shinkili|r reset to defaults.")
@@ -1746,6 +1948,8 @@ local function initialize()
     ShinkiliDB.y = ShinkiliDB.y == nil and defaults.y or ShinkiliDB.y
     ShinkiliDB.locked = ShinkiliDB.locked == nil and defaults.locked or ShinkiliDB.locked
     ShinkiliDB.showMarker = ShinkiliDB.showMarker == nil and defaults.showMarker or ShinkiliDB.showMarker
+    ShinkiliDB.showMinimapButton = ShinkiliDB.showMinimapButton == nil and defaults.showMinimapButton or ShinkiliDB.showMinimapButton
+    ShinkiliDB.minimapAngle = ShinkiliDB.minimapAngle == nil and defaults.minimapAngle or ShinkiliDB.minimapAngle
     ShinkiliDB.overrides = type(ShinkiliDB.overrides) == "table" and ShinkiliDB.overrides or copyDefaultOverrides()
     ShinkiliDB.mappings = type(ShinkiliDB.mappings) == "table" and ShinkiliDB.mappings or {}
     ShinkiliDB.cooldownBox = nil
@@ -1756,6 +1960,7 @@ local function initialize()
     applyPosition()
     syncPlacementControls()
     updateSpellState()
+    refreshMinimapButton()
 
     addon:RegisterEvent("PLAYER_ENTERING_WORLD")
     addon:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -1802,6 +2007,10 @@ addon:SetScript("OnEvent", function(_, event, arg1)
 
     if event == "SPELLS_CHANGED" or event == "PLAYER_ENTERING_WORLD" then
         refreshAvailableSpells()
+    end
+
+    if event == "PLAYER_ENTERING_WORLD" then
+        refreshMinimapButton()
     end
 
     updateSpellState()
