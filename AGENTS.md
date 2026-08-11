@@ -29,7 +29,7 @@
 - **Account-wide:** `locale`, minimap fields, cast/channel `overrides`.
 - **Per character** (`charProfiles[Name-Realm].placement`): main/defense box size/position/lock/layer, blacklist toggle key.
 - **Per character+spec** (`charProfiles[…].specs[CLASS_N]`): `mappings`, `procs.entries`, `defense.entries` (+ enabled), `blacklist.entries` / `cooldowns` / cooldown-filter `enabled`, `simcAssist`.
-- Migration (`profileSchemaVersion >= 2`): existing data seeds every future spec for that character (lazy clone from `seed` on first visit). `charMappings` kept in sync for compatibility.
+- Migration: v2 creates `charProfiles`; v3 stops sharing account-wide defense/proc/blacklist seeds across other characters. Spec lists lazy-clone from that character’s `seed`. Unknown-class defense/proc rows are pruned with `IsPlayerSpell` on bind.
 
 ## Runtime model
 - **Main box (best single pick)** — `Logic.pickRecommendation`, four stages:

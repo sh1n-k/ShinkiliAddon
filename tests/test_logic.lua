@@ -606,19 +606,35 @@ local account = {
 }
 
 Logic.migrateCharSpecProfiles(account, "Hero-Realm")
-check("migrate sets schema version", account.profileSchemaVersion == 2)
+check("migrate sets schema version 3", account.profileSchemaVersion == 3)
 check("migrate creates char profile", type(account.charProfiles["Hero-Realm"]) == "table")
 check("migrate seed has mapping from charMappings",
     account.charProfiles["Hero-Realm"].seed.mappings[1]
         and account.charProfiles["Hero-Realm"].seed.mappings[1].spellId == 50)
-check("migrate seed has account proc",
+check("migrate seed has account proc for current char",
     account.charProfiles["Hero-Realm"].seed.procs.entries[1]
         and account.charProfiles["Hero-Realm"].seed.procs.entries[1].spellId == 100)
-check("migrate seed has cooldown exclude",
+check("migrate seed has cooldown exclude for current char",
     account.charProfiles["Hero-Realm"].seed.blacklist.cooldowns[1]
         and account.charProfiles["Hero-Realm"].seed.blacklist.cooldowns[1].spellId == 6673)
 check("migrate placement keeps toggle key",
     account.charProfiles["Hero-Realm"].placement.blacklistToggleKey == "F9")
+
+-- Other character must not inherit current account defense/proc lists.
+account.charMappings["Other-Realm"] = {{spellId = 1, colorIndex = 2, markerIndex = 1}}
+account.profileSchemaVersion = 2
+account.charProfiles["Other-Realm"] = {
+    placement = Logic.deepCopy(account.charProfiles["Hero-Realm"].placement),
+    seed = Logic.deepCopy(account.charProfiles["Hero-Realm"].seed),
+    specs = {},
+}
+Logic.migrateCharSpecProfiles(account, "Hero-Realm")
+check("v3 strips shared lists from other characters",
+    #(account.charProfiles["Other-Realm"].seed.defense.entries or {}) == 0
+        and #(account.charProfiles["Other-Realm"].seed.procs.entries or {}) == 0)
+check("v3 keeps other character mappings",
+    account.charProfiles["Other-Realm"].seed.mappings[1]
+        and account.charProfiles["Other-Realm"].seed.mappings[1].spellId == 50)
 
 local prof = Logic.ensureCharProfile(account, "Hero-Realm")
 local arms = Logic.ensureSpecProfile(prof, "WARRIOR_1")
@@ -641,6 +657,13 @@ Logic.applySpecToSettings(live, arms)
 check("apply placement size from char profile", live.size == 40)
 check("apply diverged mapping from arms", live.mappings[1] and live.mappings[1].spellId == 999)
 check("arms keeps seed simcAssist", arms.simcAssist ~= false)
+
+local known = {[100] = true, [200] = true}
+local pruned = Logic.filterPriorityEntriesKnown({
+    {spellId = 100, colorIndex = 2},
+    {spellId = 9999, colorIndex = 3},
+}, function(id) return known[id] == true end)
+check("filterPriorityEntriesKnown drops unknown", #pruned == 1 and pruned[1].spellId == 100)
 
 local before = account.charProfiles["Hero-Realm"].seed.mappings[1].spellId
 Logic.migrateCharSpecProfiles(account, "Hero-Realm")

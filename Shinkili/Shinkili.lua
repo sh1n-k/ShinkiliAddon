@@ -445,6 +445,47 @@ function feature.bindMappings()
 
     local spec = Logic.ensureSpecProfile(charProfile, specKey)
     Logic.applySpecToSettings(settings, spec)
+    -- Drop defense/proc rows for spells this character cannot use (e.g. other-class
+    -- leftovers from the v2 shared-seed migrate).
+    local function spellKnown(spellId)
+        if IsPlayerSpell then
+            local ok, known = pcall(IsPlayerSpell, spellId)
+            if ok and known == true then
+                return true
+            end
+        end
+        if IsSpellKnownOrOverridesKnown then
+            local ok, known = pcall(IsSpellKnownOrOverridesKnown, spellId)
+            if ok and known == true then
+                return true
+            end
+        end
+        return false
+    end
+    if IsPlayerSpell or IsSpellKnownOrOverridesKnown then
+        settings.defense = type(settings.defense) == "table" and settings.defense or {}
+        settings.defense.entries = Logic.filterPriorityEntriesKnown(settings.defense.entries, spellKnown)
+        settings.procs = type(settings.procs) == "table" and settings.procs or {}
+        settings.procs.entries = Logic.filterPriorityEntriesKnown(settings.procs.entries, spellKnown)
+        if type(charProfile.seed) == "table" then
+            charProfile.seed.defense = charProfile.seed.defense or {enabled = true, entries = {}}
+            charProfile.seed.defense.entries = Logic.filterPriorityEntriesKnown(
+                charProfile.seed.defense.entries,
+                spellKnown
+            )
+            charProfile.seed.procs = charProfile.seed.procs or {entries = {}}
+            charProfile.seed.procs.entries = Logic.filterPriorityEntriesKnown(
+                charProfile.seed.procs.entries,
+                spellKnown
+            )
+        end
+        if type(spec.defense) == "table" then
+            spec.defense.entries = Logic.deepCopy(settings.defense.entries)
+        end
+        if type(spec.procs) == "table" then
+            spec.procs.entries = Logic.deepCopy(settings.procs.entries)
+        end
+    end
     -- Keep legacy charMappings pointer in sync for older paths.
     settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
     settings.charMappings[key] = settings.mappings
@@ -1197,8 +1238,13 @@ getSpellCooldownInfo = function(spellId)
     return nil
 end
 
-local function sanitizeSettings()
-    feature.bindMappings()
+--- options.skipBind: keep live root lists (after an in-UI edit) instead of reloading
+--- from charProfiles, which would wipe unsaved inserts.
+local function sanitizeSettings(options)
+    options = type(options) == "table" and options or {}
+    if options.skipBind ~= true then
+        feature.bindMappings()
+    end
     Logic.sanitizeSettings(db(), sanitizeConfig())
     feature.persistMappings()
 end
@@ -1415,6 +1461,7 @@ end
 setBlacklistEnabled = function(enabled, showToast)
     local blacklist = getBlacklistSettings()
     blacklist.enabled = enabled and true or false
+    sanitizeSettings({skipBind = true})
     updateSpellState()
     if showToast ~= false then
         showBlacklistToast(blacklist.enabled)
@@ -2788,7 +2835,7 @@ local function upsertPriorityEntry(listKey, spellId, colorIndex)
         if entry.spellId == spellId then
             entry.colorIndex = colorIndex
             entry.enabled = true
-            sanitizeSettings()
+            sanitizeSettings({skipBind = true})
             return
         end
     end
@@ -2797,7 +2844,7 @@ local function upsertPriorityEntry(listKey, spellId, colorIndex)
         colorIndex = colorIndex,
         enabled = true,
     })
-    sanitizeSettings()
+    sanitizeSettings({skipBind = true})
 end
 
 local function createPriorityRow(parent, _)
@@ -3232,13 +3279,14 @@ local function createBlacklistOptionsPanel(frame)
         for _, entry in ipairs(blacklist.entries) do
             if entry.spellId == spellId then
                 entry.enabled = true
+                sanitizeSettings({skipBind = true})
                 updateBlacklistRows()
                 updateSpellState()
                 return
             end
         end
         table.insert(blacklist.entries, {spellId = spellId, enabled = true})
-        sanitizeSettings()
+        sanitizeSettings({skipBind = true})
         updateBlacklistRows()
         updateSpellState()
     end)
@@ -3393,13 +3441,14 @@ local function createBlacklistOptionsPanel(frame)
         for _, entry in ipairs(blacklist.cooldowns) do
             if entry.spellId == spellId then
                 entry.enabled = true
+                sanitizeSettings({skipBind = true})
                 updateCooldownExcludeRows()
                 updateSpellState()
                 return
             end
         end
         table.insert(blacklist.cooldowns, {spellId = spellId, enabled = true})
-        sanitizeSettings()
+        sanitizeSettings({skipBind = true})
         updateCooldownExcludeRows()
         updateSpellState()
     end)
@@ -3466,10 +3515,12 @@ local function createBlacklistOptionsPanel(frame)
                 row.deleteButton:SetText(L("DELETE"))
                 row.enable:SetScript("OnClick", function(self)
                     entry.enabled = self:GetChecked() and true or false
+                    sanitizeSettings({skipBind = true})
                     updateSpellState()
                 end)
                 row.deleteButton:SetScript("OnClick", function()
                     table.remove(entries, entryIndex)
+                    sanitizeSettings({skipBind = true})
                     refreshFn()
                     updateSpellState()
                 end)

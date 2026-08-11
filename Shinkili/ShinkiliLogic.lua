@@ -484,11 +484,20 @@ function Logic.applyCharPlacementToSettings(settings, placement)
     return settings
 end
 
-local function seedFromAccountRoot(accountDb, mappings)
+local function seedFromAccountRoot(accountDb, mappings, includeSharedLists)
     accountDb = type(accountDb) == "table" and accountDb or {}
     local defense = type(accountDb.defense) == "table" and accountDb.defense or {}
     local procs = type(accountDb.procs) == "table" and accountDb.procs or {}
     local blacklist = type(accountDb.blacklist) == "table" and accountDb.blacklist or {}
+    if includeSharedLists == false then
+        return {
+            mappings = Logic.deepCopy(mappings) or {},
+            procs = {entries = {}},
+            defense = {enabled = true, entries = {}},
+            blacklist = {enabled = false, entries = {}, cooldowns = {}},
+            simcAssist = true,
+        }
+    end
     return {
         mappings = Logic.deepCopy(mappings) or {},
         procs = {entries = Logic.deepCopy(procs.entries) or {}},
@@ -505,57 +514,118 @@ local function seedFromAccountRoot(accountDb, mappings)
     }
 end
 
---- One-time migration to charProfiles. Existing data seeds every future spec.
+local function stripSharedListsFromSeed(seed, keepMappings)
+    seed = type(seed) == "table" and seed or emptySpecProfile()
+    local maps = keepMappings and (Logic.deepCopy(seed.mappings) or {}) or {}
+    return {
+        mappings = maps,
+        procs = {entries = {}},
+        defense = {enabled = true, entries = {}},
+        blacklist = {enabled = false, entries = {}, cooldowns = {}},
+        simcAssist = seed.simcAssist ~= false,
+    }
+end
+
+--- Drop priority entries the player cannot cast (wrong-class leftovers after migrate).
+function Logic.filterPriorityEntriesKnown(entries, isKnownFn)
+    if type(entries) ~= "table" then
+        return {}
+    end
+    if type(isKnownFn) ~= "function" then
+        return entries
+    end
+    local out = {}
+    for index = 1, #entries do
+        local entry = entries[index]
+        local spellId = type(entry) == "table" and tonumber(entry.spellId) or nil
+        if spellId and spellId > 0 then
+            local ok, known = pcall(isKnownFn, spellId)
+            if ok and known == true then
+                out[#out + 1] = entry
+            end
+        end
+    end
+    return out
+end
+
+--- One-time migration to charProfiles. Existing data seeds every future spec
+--- of the *current* character; other characters keep mappings only (no shared
+--- account-wide defense/proc/blacklist lists).
 function Logic.migrateCharSpecProfiles(accountDb, currentCharacterKey)
     if type(accountDb) ~= "table" then
         return
     end
-    if tonumber(accountDb.profileSchemaVersion) and tonumber(accountDb.profileSchemaVersion) >= 2 then
-        return
-    end
+    local version = tonumber(accountDb.profileSchemaVersion) or 0
 
     accountDb.charProfiles = type(accountDb.charProfiles) == "table" and accountDb.charProfiles or {}
     local placement = Logic.captureCharPlacementFromSettings(accountDb)
 
-    local charKeys = {}
-    if type(accountDb.charMappings) == "table" then
-        for key in pairs(accountDb.charMappings) do
-            if type(key) == "string" and key ~= "" then
-                charKeys[key] = true
+    if version < 2 then
+        local charKeys = {}
+        if type(accountDb.charMappings) == "table" then
+            for key in pairs(accountDb.charMappings) do
+                if type(key) == "string" and key ~= "" then
+                    charKeys[key] = true
+                end
             end
         end
-    end
-    if type(currentCharacterKey) == "string" and currentCharacterKey ~= "" then
-        charKeys[currentCharacterKey] = true
-    end
+        if type(currentCharacterKey) == "string" and currentCharacterKey ~= "" then
+            charKeys[currentCharacterKey] = true
+        end
 
-    if not next(charKeys) then
-        accountDb._pendingProfileSeed = seedFromAccountRoot(
-            accountDb,
-            mappingListHasEntries(accountDb.mappings) and accountDb.mappings or {}
-        )
-        accountDb._pendingPlacement = Logic.deepCopy(placement)
+        if not next(charKeys) then
+            accountDb._pendingProfileSeed = seedFromAccountRoot(
+                accountDb,
+                mappingListHasEntries(accountDb.mappings) and accountDb.mappings or {},
+                true
+            )
+            accountDb._pendingPlacement = Logic.deepCopy(placement)
+        else
+            for charKey in pairs(charKeys) do
+                if type(accountDb.charProfiles[charKey]) ~= "table" then
+                    local maps = nil
+                    if type(accountDb.charMappings) == "table" and mappingListHasEntries(accountDb.charMappings[charKey]) then
+                        maps = accountDb.charMappings[charKey]
+                    elseif charKey == currentCharacterKey and mappingListHasEntries(accountDb.mappings) then
+                        maps = accountDb.mappings
+                    end
+                    local fullLists = charKey == currentCharacterKey
+                    accountDb.charProfiles[charKey] = {
+                        placement = Logic.deepCopy(placement),
+                        seed = seedFromAccountRoot(accountDb, maps or {}, fullLists),
+                        specs = {},
+                    }
+                end
+            end
+        end
+        version = 2
         accountDb.profileSchemaVersion = 2
-        return
     end
 
-    for charKey in pairs(charKeys) do
-        if type(accountDb.charProfiles[charKey]) ~= "table" then
-            local maps = nil
-            if type(accountDb.charMappings) == "table" and mappingListHasEntries(accountDb.charMappings[charKey]) then
-                maps = accountDb.charMappings[charKey]
-            elseif charKey == currentCharacterKey and mappingListHasEntries(accountDb.mappings) then
-                maps = accountDb.mappings
+    -- v3: earlier v2 seeded account-wide defense/procs onto every character.
+    if version < 3 then
+        for charKey, profile in pairs(accountDb.charProfiles) do
+            if type(charKey) == "string" and type(profile) == "table" and charKey ~= currentCharacterKey then
+                local keepMaps = profile.seed and profile.seed.mappings
+                profile.seed = stripSharedListsFromSeed(profile.seed, true)
+                if keepMaps then
+                    profile.seed.mappings = Logic.deepCopy(keepMaps)
+                end
+                if type(profile.specs) == "table" then
+                    for specKey, spec in pairs(profile.specs) do
+                        if type(spec) == "table" then
+                            local maps = spec.mappings
+                            profile.specs[specKey] = stripSharedListsFromSeed(spec, true)
+                            if maps then
+                                profile.specs[specKey].mappings = Logic.deepCopy(maps)
+                            end
+                        end
+                    end
+                end
             end
-            accountDb.charProfiles[charKey] = {
-                placement = Logic.deepCopy(placement),
-                seed = seedFromAccountRoot(accountDb, maps or {}),
-                specs = {},
-            }
         end
+        accountDb.profileSchemaVersion = 3
     end
-
-    accountDb.profileSchemaVersion = 2
 end
 
 function Logic.ensureCharProfile(accountDb, characterKey)
@@ -571,7 +641,8 @@ function Logic.ensureCharProfile(accountDb, characterKey)
         end
         local seed = accountDb._pendingProfileSeed
         if type(seed) ~= "table" then
-            seed = seedFromAccountRoot(accountDb, maps or {})
+            -- Do not copy another character's live defense/proc lists from root.
+            seed = seedFromAccountRoot(accountDb, maps or {}, false)
         elseif maps then
             seed = Logic.deepCopy(seed)
             seed.mappings = Logic.deepCopy(maps)
