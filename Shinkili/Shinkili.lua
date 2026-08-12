@@ -3015,8 +3015,9 @@ end
 -- and Lua caps a chunk at 200 locals (see AGENTS.md).
 
 --- Unfiltered, name-sorted spell picker. `stateKey` names the `state` field that
---- holds the editor's current selection.
-function feature.initSpellPickerDropdown(dropdown, stateKey)
+--- holds the editor's current selection. Optional `onSelect(spellId)` lets a tab
+--- react to the pick (the Procs editor uses it to seed the colour).
+function feature.initSpellPickerDropdown(dropdown, stateKey, onSelect)
     UIDropDownMenu_Initialize(dropdown, function(_, level)
         local info = UIDropDownMenu_CreateInfo()
         for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
@@ -3026,6 +3027,9 @@ function feature.initSpellPickerDropdown(dropdown, stateKey)
                 state[stateKey] = spellInfo.spellId
                 UIDropDownMenu_SetSelectedValue(dropdown, spellInfo.spellId)
                 UIDropDownMenu_SetText(dropdown, spellInfo.name)
+                if onSelect then
+                    onSelect(spellInfo.spellId)
+                end
             end
             info.checked = state[stateKey] == spellInfo.spellId
             UIDropDownMenu_AddButton(info, level)
@@ -3792,7 +3796,6 @@ local function createProcOptionsPanel(frame)
     local spellDropdown = CreateFrame("Frame", addonName .. "ProcSpellDropdown", editorRow, "UIDropDownMenuTemplate")
     spellDropdown:SetPoint("LEFT", 0, -2)
     UIDropDownMenu_SetWidth(spellDropdown, 300)
-    feature.initSpellPickerDropdown(spellDropdown, "procEditorSpellId")
 
     local colorDropdown = CreateFrame("Frame", addonName .. "ProcColorDropdown", editorRow, "UIDropDownMenuTemplate")
     colorDropdown:SetPoint("LEFT", spellDropdown, "RIGHT", -4, 0)
@@ -3800,6 +3803,20 @@ local function createProcOptionsPanel(frame)
     feature.initEntryColorDropdown(colorDropdown, "procEditorColorIndex")
     UIDropDownMenu_SetSelectedValue(colorDropdown, state.procEditorColorIndex or 2)
     UIDropDownMenu_SetText(colorDropdown, getColorName(state.procEditorColorIndex or 2))
+
+    -- A proc paints the same box as the main list, so a spell that already has a
+    -- main mapping defaults to that colour. Index 1 is Unassigned, and a spell
+    -- with no mapping keeps whatever colour the user picked here. Initialised
+    -- after `colorDropdown` exists so the callback closes over it as an upvalue.
+    feature.initSpellPickerDropdown(spellDropdown, "procEditorSpellId", function(spellId)
+        local colorIndex = getAssignedColorIndex(spellId)
+        if not colorIndex or colorIndex < 2 then
+            return
+        end
+        state.procEditorColorIndex = colorIndex
+        UIDropDownMenu_SetSelectedValue(colorDropdown, colorIndex)
+        UIDropDownMenu_SetText(colorDropdown, getColorName(colorIndex))
+    end)
 
     local addButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
     addButton:SetSize(90, 22)
