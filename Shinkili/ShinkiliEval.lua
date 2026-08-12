@@ -213,24 +213,29 @@ local function isSpellLearnedActive(spellId)
     if not spellId or spellId <= 0 then
         return nil
     end
+    -- Both APIs are consulted before concluding "not learned". Returning false
+    -- straight from IsPlayerSpell made the override/transform fallback below
+    -- unreachable on retail, and an override id that the spellbook only knows in
+    -- its base form would then be hard-filtered as unusable.
+    local playerSpell, overrideKnown
     if IsPlayerSpell then
         local ok, known = pcall(IsPlayerSpell, spellId)
-        if ok and known == true then
-            return true
-        end
-        if ok and known == false then
-            return false
+        if ok then
+            playerSpell = Secret.plainBool(known)
         end
     end
-    -- Some override/transform forms only show up here.
     if IsSpellKnownOrOverridesKnown then
         local ok, known = pcall(IsSpellKnownOrOverridesKnown, spellId)
-        if ok and known == true then
-            return true
+        if ok then
+            overrideKnown = Secret.plainBool(known)
         end
-        if ok and known == false and not IsPlayerSpell then
-            return false
-        end
+    end
+
+    if playerSpell == true or overrideKnown == true then
+        return true
+    end
+    if playerSpell == false or overrideKnown == false then
+        return false
     end
     return nil
 end
@@ -341,19 +346,11 @@ local function computeCooldownBlocked(spellId)
                 maxCharges, recharging, currentCharges = dMax, dRech, dCur
             end
         end
-        if currentCharges ~= nil then
-            if maxCharges and maxCharges > 1 then
-                return currentCharges <= 0
-            end
-        end
-    end
-
-    local tracked = trackedChargesRemaining(spellId, displayId)
-    if tracked == 0 then
-        return true
-    end
-
-    if not skippedChargeRead then
+        -- chargeVerdict owns the ordering: plain currentCharges, then the
+        -- NeverSecret "no recharge running" (= full bank), then the tracker.
+        -- Checking the tracker before that let a reconstructed 0 -- which drifts
+        -- because the scanned recharge length carries no haste -- override a
+        -- state the engine had already proven.
         local verdict, isChargeSpell = chargeVerdict(
             spellId,
             displayId,
@@ -364,6 +361,11 @@ local function computeCooldownBlocked(spellId)
         if isChargeSpell then
             return verdict
         end
+    elseif trackedChargesRemaining(spellId, displayId) == 0 then
+        -- The scan said "no charges", but the tracker only ever holds state for
+        -- multi-charge spells: a tracked zero is evidence both that the scan was
+        -- wrong and that the bank is empty. Confirmed zero always excludes.
+        return true
     end
 
     local blocked = Secret.isSpellOnRealCooldown(spellId)

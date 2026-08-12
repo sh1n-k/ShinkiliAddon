@@ -33,7 +33,8 @@
 
 ## Runtime model
 - **Main box (best single pick)** — `Logic.pickRecommendation`, four stages:
-  1. **Pool**: AC primary → highlight lookahead → `GetRotationSpells`, normalised to display ids, blacklisted entries removed. The defense and proc boxes are user-curated lists and deliberately ignore the blacklist.
+  1. **Pool**: AC primary → highlight lookahead → `GetRotationSpells`, normalised to display ids, excluded entries removed. The defense and proc boxes are user-curated lists and deliberately ignore the exclusions.
+  1b. **Ownership**: a spell the player has not actually learned (talent choice nodes leave the unpicked active id unlearned while `IsSpellUsable` still reports it ready) is `unusable`. `IsPlayerSpell` and `IsSpellKnownOrOverridesKnown` are both consulted; neither answering means unknown, not "unlearned".
   2. **Hard filter**: drop anything the game *confirms* cannot be cast (`unusable` / `out_of_range` / `on_cd`). `no_resource` is transient and never removes a spell.
   3. **SimC override**: first SimC entry that is in the pool, has **every** gate proven `pass`, and reads `ready`. Reason `simc_verified`.
      - A gateless non-delegated entry is an unconditional APL line and stays promotable, but is vetoed by **self-redundancy** when its own buff is *confirmed* active or its own DoT *confirmed* live. Unreadable reads do not veto, so in combat with auras secret this rarely fires; the DoT half only ever applies to entries a `dot` gate also references (1 of 187 today).
@@ -45,7 +46,7 @@
 - **`delegated` entries** (SimC condition needs a value 12.0 hides) are always `unknown` — they can never override AC. 446 of 682 bundled entries (65%). Of the remaining 236, **207 are promotable** and 29 are blocked by the lossy-gate rule above.
 - **Proc** display override still wins on top of everything, and is castability-filtered with the **main-box** policy (`Eval.isPickable`): hidden on `unusable`/`out_of_range`/`on_cd`, shown on `no_resource`. Filtering procs on affordability would blink a procced spender at 20Hz.
 - **Layers**: per-box `frameStrata` + `frameLevel` (options on Main / Defense).
-- **Blacklist**: tab + filter toggle; capture keybind (key/mouse/wheel) via override binding; center toast on toggle.
+- **Exclusions**: two lists. `blacklist.entries` is permanent and always applied; `blacklist.cooldowns` is gated by `blacklist.enabled` (keybind toggle, `/sk blacklist`, centre toast). `Logic.sanitizeSettings` migrates a legacy single list into `cooldowns` so an upgrade cannot silently make old entries permanent.
 - **Options tabs**: Main / Defense / Procs / Blacklist; language + minimap in footer.
 
 ## Git Safety
@@ -77,8 +78,9 @@ It does **not** require a JustAC change: every entry in
 recover `dot` polarity, the `execute` operator, and the `cd` reference id (the
 referenced token is usually another entry in the same spec list) — and would let
 us mark the ~57 dropped-talent lines `delegated=true`, closing that hole
-conservatively. The highest-value single change beyond that is emitting `talent`
-as a real gate: `IsPlayerSpell` is never secret, so it is fully evaluable.
+conservatively. Note the ownership check above already uses `IsPlayerSpell` for castability;
+emitting `talent` as a real *gate* would additionally let SimC lines that branch
+on a talent be verified rather than silently dropped.
 
 ## Stage C semantics
 The override takes the **highest-priority entry it can fully verify**, skipping

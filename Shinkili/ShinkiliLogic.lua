@@ -185,7 +185,7 @@ function Logic.characterNameFromKey(characterKey)
     if type(characterKey) ~= "string" or characterKey == "" then
         return nil
     end
-    local name = characterKey:match("^(.+)%-.+$")
+    local name = characterKey:match("^(.-)%-")
     if type(name) == "string" and name ~= "" then
         return name
     end
@@ -414,7 +414,7 @@ function Logic.applySpecToSettings(settings, spec)
     settings.blacklist.enabled = spec.blacklist and spec.blacklist.enabled == true
     settings.blacklist.entries = Logic.deepCopy(spec.blacklist and spec.blacklist.entries) or {}
     settings.blacklist.cooldowns = Logic.deepCopy(spec.blacklist and spec.blacklist.cooldowns) or {}
-    settings.simcAssist = not (spec.simcAssist == false)
+    settings.simcAssist = spec.simcAssist ~= false
     return settings
 end
 
@@ -603,7 +603,10 @@ function Logic.migrateCharSpecProfiles(accountDb, currentCharacterKey)
     end
 
     -- v3: earlier v2 seeded account-wide defense/procs onto every character.
-    if version < 3 then
+    -- Only "not the current character" is stripped, so without a character key
+    -- every profile looks foreign and the logged-in character's own lists would
+    -- be wiped -- and the version bump would make it unrepeatable. Defer.
+    if version < 3 and type(currentCharacterKey) == "string" and currentCharacterKey ~= "" then
         for charKey, profile in pairs(accountDb.charProfiles) do
             if type(charKey) == "string" and type(profile) == "table" and charKey ~= currentCharacterKey then
                 local keepMaps = profile.seed and profile.seed.mappings
@@ -661,6 +664,12 @@ function Logic.ensureCharProfile(accountDb, characterKey)
             specs = {},
         }
         accountDb.charProfiles[characterKey] = profile
+        -- The pending seed exists to hand the pre-v2 account-root snapshot to the
+        -- FIRST character whose key becomes known. Leaving it set makes every
+        -- alt created afterwards inherit that character's defense/proc/blacklist
+        -- lists, which is exactly what the v3 migration removes.
+        accountDb._pendingProfileSeed = nil
+        accountDb._pendingPlacement = nil
     end
     profile.specs = type(profile.specs) == "table" and profile.specs or {}
     if type(profile.seed) ~= "table" then
@@ -892,8 +901,16 @@ function Logic.sanitizeSettings(settings, config)
     else
         settings.blacklist.toggleKey = settings.blacklist.toggleKey
     end
+    -- Legacy DBs predate the split: back then `entries` WAS the cooldown list and
+    -- the master switch controlled it. `entries` is now applied permanently, so
+    -- adopting an old list as-is would silently and irreversibly exclude spells
+    -- the user had switched off. Move it to `cooldowns` once.
+    if settings.blacklist.cooldowns == nil then
+        settings.blacklist.cooldowns = settings.blacklist.entries or {}
+        settings.blacklist.entries = {}
+    end
     settings.blacklist.entries = Logic.sanitizeBlacklistEntries(settings.blacklist.entries)
-    -- Cooldown suppress list: same shape as entries; filtered with the same master switch.
+    -- Cooldown suppress list: same shape as entries, gated by the master switch.
     settings.blacklist.cooldowns = Logic.sanitizeBlacklistEntries(settings.blacklist.cooldowns)
     settings.simcAssist = settings.simcAssist ~= false
 

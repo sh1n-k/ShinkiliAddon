@@ -1,14 +1,21 @@
 local addonName = ...
 
-local LEGACY_MAPPING_SLOTS = 12
-local VISIBLE_MAPPING_ROWS = 5
-local MAPPING_ROW_HEIGHT = 28
-local PRIORITY_VISIBLE_ROWS = 6
-local PRIORITY_ROW_HEIGHT = 28
-local GCD_SPELL_ID = 61304
-local OPTIONS_WIDTH = 900
-local OPTIONS_HEIGHT = 760
-local BLACKLIST_TOGGLE_BUTTON = "ShinkiliBlacklistToggleButton"
+-- Grouped into one table on purpose: this file is a single Lua chunk and Lua
+-- caps a chunk at 200 locals. luacheck does not catch a violation but the game
+-- refuses to load the addon, so top-level `local` slots are a scarce resource.
+-- See tests/test_load.lua and the guardrail in AGENTS.md.
+local C = {
+    LEGACY_MAPPING_SLOTS = 12,
+    VISIBLE_MAPPING_ROWS = 5,
+    MAPPING_ROW_HEIGHT = 28,
+    PRIORITY_VISIBLE_ROWS = 6,
+    PRIORITY_ROW_HEIGHT = 28,
+    GCD_SPELL_ID = 61304,
+    OPTIONS_WIDTH = 900,
+    OPTIONS_HEIGHT = 760,
+    BLACKLIST_TOGGLE_BUTTON = "ShinkiliBlacklistToggleButton",
+}
+
 local FRAME_STRATA_LIST = {
     "BACKGROUND",
     "LOW",
@@ -302,7 +309,7 @@ toastText:SetTextColor(0.20, 1.00, 0.60, 1)
 toastText:SetShadowOffset(1, -1)
 toastText:SetShadowColor(0, 0, 0, 0.95)
 
-local blacklistToggleButton = CreateFrame("Button", BLACKLIST_TOGGLE_BUTTON, UIParent)
+local blacklistToggleButton = CreateFrame("Button", C.BLACKLIST_TOGGLE_BUTTON, UIParent)
 blacklistToggleButton:SetSize(1, 1)
 blacklistToggleButton:Hide()
 
@@ -372,7 +379,6 @@ local setBlacklistEnabled
 local showBlacklistToast
 local updateSpellState
 local getSimcSpecKey
-local rebindProfile
 local function db()
     return ShinkiliDB
 end
@@ -397,6 +403,13 @@ function feature.characterKey()
 end
 
 --- Bind per-character placement + per-spec lists into the live settings root.
+--- The spec bucket the live settings were last loaded from. Persisting must
+--- target THIS, not whatever GetSpecialization() answers right now:
+--- PLAYER_SPECIALIZATION_CHANGED already reports the incoming spec, so using the
+--- live value writes the outgoing spec's lists into the incoming spec's bucket
+--- and destroys it.
+local boundSpecKey
+
 function feature.bindMappings()
     local settings = db()
     if not settings then
@@ -432,6 +445,7 @@ function feature.bindMappings()
     Logic.applyCharPlacementToSettings(settings, charProfile.placement)
 
     local specKey = getSimcSpecKey and getSimcSpecKey() or nil
+    boundSpecKey = specKey
     if not specKey then
         -- Spec unknown yet: keep seed lists live so UI is not empty before talent load.
         Logic.applySpecToSettings(settings, charProfile.seed or Logic.emptySpecProfile())
@@ -462,36 +476,35 @@ function feature.bindMappings()
         end
         return false
     end
+    -- Display-only prune. It must NOT be written back into `spec` or
+    -- `charProfile.seed`: unlearning a spell by swapping a talent would delete
+    -- the row permanently, and swapping back would not restore it. The seed
+    -- would also shrink to the intersection of every spec ever visited.
+    --
+    -- If the filter would empty a non-empty list, the spellbook is most likely
+    -- not loaded yet -- keep the list rather than blanking the box.
     if IsPlayerSpell or IsSpellKnownOrOverridesKnown then
+        local function pruneForDisplay(entries)
+            if type(entries) ~= "table" or #entries == 0 then
+                return entries
+            end
+            local filtered = Logic.filterPriorityEntriesKnown(entries, spellKnown)
+            if type(filtered) ~= "table" or #filtered == 0 then
+                return entries
+            end
+            return filtered
+        end
         settings.defense = type(settings.defense) == "table" and settings.defense or {}
-        settings.defense.entries = Logic.filterPriorityEntriesKnown(settings.defense.entries, spellKnown)
+        settings.defense.entries = pruneForDisplay(settings.defense.entries)
         settings.procs = type(settings.procs) == "table" and settings.procs or {}
-        settings.procs.entries = Logic.filterPriorityEntriesKnown(settings.procs.entries, spellKnown)
-        if type(charProfile.seed) == "table" then
-            charProfile.seed.defense = charProfile.seed.defense or {enabled = true, entries = {}}
-            charProfile.seed.defense.entries = Logic.filterPriorityEntriesKnown(
-                charProfile.seed.defense.entries,
-                spellKnown
-            )
-            charProfile.seed.procs = charProfile.seed.procs or {entries = {}}
-            charProfile.seed.procs.entries = Logic.filterPriorityEntriesKnown(
-                charProfile.seed.procs.entries,
-                spellKnown
-            )
-        end
-        if type(spec.defense) == "table" then
-            spec.defense.entries = Logic.deepCopy(settings.defense.entries)
-        end
-        if type(spec.procs) == "table" then
-            spec.procs.entries = Logic.deepCopy(settings.procs.entries)
-        end
+        settings.procs.entries = pruneForDisplay(settings.procs.entries)
     end
     -- Keep legacy charMappings pointer in sync for older paths.
     settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
     settings.charMappings[key] = settings.mappings
 end
 
---- Write live settings back into char placement + current spec bucket.
+--- Write live settings back into char placement + the bound spec bucket.
 function feature.persistMappings()
     local settings = db()
     if not settings then
@@ -509,7 +522,7 @@ function feature.persistMappings()
 
     charProfile.placement = Logic.captureCharPlacementFromSettings(settings)
 
-    local specKey = getSimcSpecKey and getSimcSpecKey() or nil
+    local specKey = boundSpecKey or (getSimcSpecKey and getSimcSpecKey() or nil)
     if specKey then
         local captured = Logic.captureSpecFromSettings(settings)
         charProfile.specs = type(charProfile.specs) == "table" and charProfile.specs or {}
@@ -535,7 +548,16 @@ function feature.applyInterruptLayout()
     box:SetPoint("BOTTOM", square, "TOP", 0, gap)
 end
 
+--- Re-anchoring a FontString forces a layout pass, and this runs on the 20Hz
+--- ticker, so only move the label when the state actually flips.
+local labelAnchoredToInterrupt
+
 function feature.setLabelForInterrupt(showInterrupt)
+    showInterrupt = showInterrupt and true or false
+    if labelAnchoredToInterrupt == showInterrupt then
+        return
+    end
+    labelAnchoredToInterrupt = showInterrupt
     label:ClearAllPoints()
     if showInterrupt then
         label:SetPoint("BOTTOM", feature.interruptBox, "TOP", 0, 4)
@@ -590,6 +612,11 @@ end
 function feature.refreshInterrupt()
     local isCasting, notInterruptible, accessible = feature.getTargetCastInterruptInfo()
     local show = Logic.shouldShowInterruptIndicator(isCasting, notInterruptible, accessible)
+    -- The box is parented to UIParent and only anchored to the square, so it
+    -- would otherwise float alone when the main box is hidden.
+    if show and not square:IsShown() then
+        show = false
+    end
     local box = feature.interruptBox
     if show then
         box:SetBackdropColor(1.00, 1.00, 0.00, 1.00)
@@ -609,7 +636,7 @@ local function sanitizeConfig()
         yDefault = defaults.y,
         pointDefault = defaults.point,
         relativePointDefault = defaults.relativePoint,
-        legacyMappingSlots = LEGACY_MAPPING_SLOTS,
+        legacyMappingSlots = C.LEGACY_MAPPING_SLOTS,
         colorPaletteSize = #COLOR_PALETTE,
         markerPaletteSize = #MARKER_PALETTE,
         reservedOverrideSize = #RESERVED_OVERRIDE_PALETTE,
@@ -1238,11 +1265,13 @@ getSpellCooldownInfo = function(spellId)
     return nil
 end
 
---- options.skipBind: keep live root lists (after an in-UI edit) instead of reloading
+--- opts.skipBind: keep live root lists (after an in-UI edit) instead of reloading
 --- from charProfiles, which would wipe unsaved inserts.
-local function sanitizeSettings(options)
-    options = type(options) == "table" and options or {}
-    if options.skipBind ~= true then
+--- Named `opts`, not `options`: that name is the options-window frame at module
+--- scope, and shadowing it here would be silent.
+local function sanitizeSettings(opts)
+    opts = type(opts) == "table" and opts or {}
+    if opts.skipBind ~= true then
         feature.bindMappings()
     end
     Logic.sanitizeSettings(db(), sanitizeConfig())
@@ -1454,7 +1483,7 @@ applyBlacklistBinding = function()
     local blacklist = getBlacklistSettings()
     local key = blacklist.toggleKey
     if key and key ~= "" and SetOverrideBindingClick then
-        SetOverrideBindingClick(addon, true, key, BLACKLIST_TOGGLE_BUTTON)
+        SetOverrideBindingClick(addon, true, key, C.BLACKLIST_TOGGLE_BUTTON)
     end
 end
 
@@ -1622,7 +1651,7 @@ function updateCooldownSpiral()
 
     -- Cooldown numbers are secret in 12.0 combat; branching on them raw is the
     -- one thing the whole secret layer exists to avoid. Unreadable -> no spiral.
-    local startTime, duration, enabled, modRate = getSpellCooldownInfo(GCD_SPELL_ID)
+    local startTime, duration, enabled, modRate = getSpellCooldownInfo(C.GCD_SPELL_ID)
     if not startTime or not duration or enabled == false or duration <= 0 then
         spiral:Hide()
         spiral:SetCooldown(0, 0, 1)
@@ -1892,7 +1921,7 @@ end
 
 local function createSavedMappingRow(parent, rowIndex, layout)
     local row = CreateFrame("Frame", addonName .. "SavedRow" .. rowIndex, parent)
-    row:SetSize(layout.listWidth, MAPPING_ROW_HEIGHT)
+    row:SetSize(layout.listWidth, C.MAPPING_ROW_HEIGHT)
 
     row.background = row:CreateTexture(nil, "BACKGROUND")
     row.background:SetAllPoints()
@@ -2046,7 +2075,7 @@ local function deleteMappingByIndex(mappingIndex)
         state.editorColorIndex = nil
     end
 
-    sanitizeSettings()
+    sanitizeSettings({skipBind = true})
     syncEditorSelection()
 end
 
@@ -2058,6 +2087,11 @@ local function saveEditorMapping()
     local mapping, mappingIndex = getMappingBySpell(state.editorSpellId)
     local colorIndex = state.editorColorIndex
     if not colorIndex then
+        if mapping then
+            -- Editing an existing row with the dropdown on "Unassigned" is not a
+            -- request to recolour it; auto-assign is for adding a new row only.
+            return
+        end
         colorIndex = Logic.getFirstFreeColorIndex(db().mappings, mappingIndex, #COLOR_PALETTE)
         if not colorIndex then
             print("|cff33ff99Shinkili|r " .. L("MSG_MAP_NO_COLOR"))
@@ -2085,7 +2119,7 @@ local function saveEditorMapping()
         state.previewMoveGlow = state.editorMoveGlow == true
     end
 
-    sanitizeSettings()
+    sanitizeSettings({skipBind = true})
     syncEditorSelection()
 end
 
@@ -2129,7 +2163,7 @@ function feature.mapCurrentRecommendation()
     state.editorMoveGlow = false
     rememberRecommendedSpell(spellId)
 
-    sanitizeSettings()
+    sanitizeSettings({skipBind = true})
     syncEditorSelection()
     if state.optionsOpen then
         updateEditorControls()
@@ -2155,11 +2189,11 @@ function updateMappingRows()
     local offset = 0
 
     if mappingScrollFrame then
-        FauxScrollFrame_Update(mappingScrollFrame, totalRows, VISIBLE_MAPPING_ROWS, MAPPING_ROW_HEIGHT)
+        FauxScrollFrame_Update(mappingScrollFrame, totalRows, C.VISIBLE_MAPPING_ROWS, C.MAPPING_ROW_HEIGHT)
         offset = FauxScrollFrame_GetOffset(mappingScrollFrame)
     end
 
-    for rowIndex = 1, VISIBLE_MAPPING_ROWS do
+    for rowIndex = 1, C.VISIBLE_MAPPING_ROWS do
         local row = mappingRows[rowIndex]
         local entry = entries[offset + rowIndex]
 
@@ -2384,18 +2418,6 @@ local function resetToDefaults()
     local charKey = feature.characterKey()
     settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
     settings.charProfiles = type(settings.charProfiles) == "table" and settings.charProfiles or {}
-    if charKey then
-        settings.charMappings[charKey] = settings.mappings
-        settings.charProfiles[charKey] = {
-            placement = Logic.captureCharPlacementFromSettings(settings),
-            seed = Logic.emptySpecProfile(),
-            specs = {},
-        }
-        settings.pendingMappingsReset = nil
-    else
-        -- Character key not ready yet; bindMappings clears this character on next stable key.
-        settings.pendingMappingsReset = true
-    end
     settings.defense = {
         enabled = defaults.defense.enabled,
         locked = defaults.defense.locked,
@@ -2417,6 +2439,23 @@ local function resetToDefaults()
     }
     settings.simcAssist = defaults.simcAssist
     settings.cooldownBox = nil
+
+    -- Capture placement only AFTER defense and blacklist are back at defaults:
+    -- capturing first stored the OLD defense box position and exclude keybind in
+    -- the profile, and the following bind wrote them straight back into the live
+    -- settings, so the reset appeared to half-fail.
+    if charKey then
+        settings.charMappings[charKey] = settings.mappings
+        settings.charProfiles[charKey] = {
+            placement = Logic.captureCharPlacementFromSettings(settings),
+            seed = Logic.emptySpecProfile(),
+            specs = {},
+        }
+        settings.pendingMappingsReset = nil
+    else
+        -- Character key not ready yet; bindMappings clears this character on next stable key.
+        settings.pendingMappingsReset = true
+    end
 
     state.editorSpellId = nil
     state.editorColorIndex = nil
@@ -2642,12 +2681,12 @@ local function createMainOptionsPanel(frame)
 
     mappingScrollFrame = CreateFrame("ScrollFrame", addonName .. "MappingsScrollFrame", frame, "FauxScrollFrameTemplate")
     mappingScrollFrame:SetPoint("TOPLEFT", listHeaders, "BOTTOMLEFT", 0, -2)
-    mappingScrollFrame:SetSize(listWidth, VISIBLE_MAPPING_ROWS * MAPPING_ROW_HEIGHT)
+    mappingScrollFrame:SetSize(listWidth, C.VISIBLE_MAPPING_ROWS * C.MAPPING_ROW_HEIGHT)
     mappingScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
-        FauxScrollFrame_OnVerticalScroll(self, offset, MAPPING_ROW_HEIGHT, updateMappingRows)
+        FauxScrollFrame_OnVerticalScroll(self, offset, C.MAPPING_ROW_HEIGHT, updateMappingRows)
     end)
 
-    for rowIndex = 1, VISIBLE_MAPPING_ROWS do
+    for rowIndex = 1, C.VISIBLE_MAPPING_ROWS do
         local row = createSavedMappingRow(frame, rowIndex, optionsLayout)
         if rowIndex == 1 then
             row:SetPoint("TOPLEFT", mappingScrollFrame, "TOPLEFT", 0, 0)
@@ -2849,7 +2888,7 @@ end
 
 local function createPriorityRow(parent, _)
     local row = CreateFrame("Frame", nil, parent)
-    row:SetSize(math.max((parent:GetWidth() or 700) - 24, 600), PRIORITY_ROW_HEIGHT)
+    row:SetSize(math.max((parent:GetWidth() or 700) - 24, 600), C.PRIORITY_ROW_HEIGHT)
 
     row.enable = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
     row.enable:SetPoint("LEFT", 0, 0)
@@ -2902,11 +2941,11 @@ local function bindPriorityRows(rows, scrollFrame, emptyText, listKey, refreshFn
     local total = #entries
     local offset = 0
     if scrollFrame then
-        FauxScrollFrame_Update(scrollFrame, total, PRIORITY_VISIBLE_ROWS, PRIORITY_ROW_HEIGHT)
+        FauxScrollFrame_Update(scrollFrame, total, C.PRIORITY_VISIBLE_ROWS, C.PRIORITY_ROW_HEIGHT)
         offset = FauxScrollFrame_GetOffset(scrollFrame)
     end
 
-    for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+    for rowIndex = 1, C.PRIORITY_VISIBLE_ROWS do
         local row = rows[rowIndex]
         local entry = entries[offset + rowIndex]
         if entry then
@@ -2922,23 +2961,30 @@ local function bindPriorityRows(rows, scrollFrame, emptyText, listKey, refreshFn
             row.deleteButton:SetText(L("DELETE"))
             row.upButton:SetEnabled(entryIndex > 1)
             row.downButton:SetEnabled(entryIndex < total)
+            -- Every one of these mutates the live list, so it has to persist:
+            -- otherwise the next bind reloads the stored bucket and the edit is
+            -- silently reverted the moment the options window reopens.
             row.enable:SetScript("OnClick", function(self)
                 entry.enabled = self:GetChecked() and true or false
+                sanitizeSettings({skipBind = true})
                 refreshFn()
                 refreshVisibility()
             end)
             row.upButton:SetScript("OnClick", function()
                 Logic.movePriorityEntry(entries, entryIndex, -1)
+                sanitizeSettings({skipBind = true})
                 refreshFn()
                 refreshVisibility()
             end)
             row.downButton:SetScript("OnClick", function()
                 Logic.movePriorityEntry(entries, entryIndex, 1)
+                sanitizeSettings({skipBind = true})
                 refreshFn()
                 refreshVisibility()
             end)
             row.deleteButton:SetScript("OnClick", function()
                 table.remove(entries, entryIndex)
+                sanitizeSettings({skipBind = true})
                 refreshFn()
                 refreshVisibility()
             end)
@@ -3169,12 +3215,12 @@ local function createDefenseOptionsPanel(frame)
 
     defenseScrollFrame = CreateFrame("ScrollFrame", addonName .. "DefenseScroll", frame, "FauxScrollFrameTemplate")
     defenseScrollFrame:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -6)
-    defenseScrollFrame:SetSize(contentWidth - 10, PRIORITY_VISIBLE_ROWS * PRIORITY_ROW_HEIGHT)
+    defenseScrollFrame:SetSize(contentWidth - 10, C.PRIORITY_VISIBLE_ROWS * C.PRIORITY_ROW_HEIGHT)
     defenseScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
-        FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateDefenseRows)
+        FauxScrollFrame_OnVerticalScroll(self, offset, C.PRIORITY_ROW_HEIGHT, updateDefenseRows)
     end)
 
-    for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+    for rowIndex = 1, C.PRIORITY_VISIBLE_ROWS do
         local row = createPriorityRow(frame, rowIndex)
         if rowIndex == 1 then
             row:SetPoint("TOPLEFT", defenseScrollFrame, "TOPLEFT", 0, 0)
@@ -3302,14 +3348,14 @@ local function createBlacklistOptionsPanel(frame)
 
     blacklistScrollFrame = CreateFrame("ScrollFrame", addonName .. "BlacklistScroll", frame, "FauxScrollFrameTemplate")
     blacklistScrollFrame:SetPoint("TOPLEFT", listLabel, "BOTTOMLEFT", 0, -6)
-    blacklistScrollFrame:SetSize(contentWidth - 10, BL_SECTION_ROWS * PRIORITY_ROW_HEIGHT)
+    blacklistScrollFrame:SetSize(contentWidth - 10, BL_SECTION_ROWS * C.PRIORITY_ROW_HEIGHT)
     blacklistScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
-        FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateBlacklistRows)
+        FauxScrollFrame_OnVerticalScroll(self, offset, C.PRIORITY_ROW_HEIGHT, updateBlacklistRows)
     end)
 
     for rowIndex = 1, BL_SECTION_ROWS do
         local row = CreateFrame("Frame", nil, frame)
-        row:SetSize(contentWidth - 24, PRIORITY_ROW_HEIGHT)
+        row:SetSize(contentWidth - 24, C.PRIORITY_ROW_HEIGHT)
         if rowIndex == 1 then
             row:SetPoint("TOPLEFT", blacklistScrollFrame, "TOPLEFT", 0, 0)
         else
@@ -3461,14 +3507,14 @@ local function createBlacklistOptionsPanel(frame)
 
     cooldownExcludeScrollFrame = CreateFrame("ScrollFrame", addonName .. "CooldownExcludeScroll", frame, "FauxScrollFrameTemplate")
     cooldownExcludeScrollFrame:SetPoint("TOPLEFT", cdListLabel, "BOTTOMLEFT", 0, -6)
-    cooldownExcludeScrollFrame:SetSize(contentWidth - 10, BL_SECTION_ROWS * PRIORITY_ROW_HEIGHT)
+    cooldownExcludeScrollFrame:SetSize(contentWidth - 10, BL_SECTION_ROWS * C.PRIORITY_ROW_HEIGHT)
     cooldownExcludeScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
-        FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateCooldownExcludeRows)
+        FauxScrollFrame_OnVerticalScroll(self, offset, C.PRIORITY_ROW_HEIGHT, updateCooldownExcludeRows)
     end)
 
     for rowIndex = 1, BL_SECTION_ROWS do
         local row = CreateFrame("Frame", nil, frame)
-        row:SetSize(contentWidth - 24, PRIORITY_ROW_HEIGHT)
+        row:SetSize(contentWidth - 24, C.PRIORITY_ROW_HEIGHT)
         if rowIndex == 1 then
             row:SetPoint("TOPLEFT", cooldownExcludeScrollFrame, "TOPLEFT", 0, 0)
         else
@@ -3501,7 +3547,7 @@ local function createBlacklistOptionsPanel(frame)
         local total = #entries
         local offset = 0
         if scrollFrame then
-            FauxScrollFrame_Update(scrollFrame, total, rowCount, PRIORITY_ROW_HEIGHT)
+            FauxScrollFrame_Update(scrollFrame, total, rowCount, C.PRIORITY_ROW_HEIGHT)
             offset = FauxScrollFrame_GetOffset(scrollFrame)
         end
         for rowIndex = 1, rowCount do
@@ -3515,7 +3561,12 @@ local function createBlacklistOptionsPanel(frame)
                 row.deleteButton:SetText(L("DELETE"))
                 row.enable:SetScript("OnClick", function(self)
                     entry.enabled = self:GetChecked() and true or false
+                    -- sanitizeBlacklistEntries rebuilds the array with fresh
+                    -- tables, so the captured `entry`/`entries` become orphans.
+                    -- Re-render to rebind the handlers, or a second click (and
+                    -- the row's Delete) writes to a detached table.
                     sanitizeSettings({skipBind = true})
+                    refreshFn()
                     updateSpellState()
                 end)
                 row.deleteButton:SetScript("OnClick", function()
@@ -3701,12 +3752,12 @@ local function createProcOptionsPanel(frame)
 
     procScrollFrame = CreateFrame("ScrollFrame", addonName .. "ProcScroll", frame, "FauxScrollFrameTemplate")
     procScrollFrame:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", 0, -6)
-    procScrollFrame:SetSize(contentWidth - 10, PRIORITY_VISIBLE_ROWS * PRIORITY_ROW_HEIGHT)
+    procScrollFrame:SetSize(contentWidth - 10, C.PRIORITY_VISIBLE_ROWS * C.PRIORITY_ROW_HEIGHT)
     procScrollFrame:SetScript("OnVerticalScroll", function(self, offset)
-        FauxScrollFrame_OnVerticalScroll(self, offset, PRIORITY_ROW_HEIGHT, updateProcRows)
+        FauxScrollFrame_OnVerticalScroll(self, offset, C.PRIORITY_ROW_HEIGHT, updateProcRows)
     end)
 
-    for rowIndex = 1, PRIORITY_VISIBLE_ROWS do
+    for rowIndex = 1, C.PRIORITY_VISIBLE_ROWS do
         local row = createPriorityRow(frame, rowIndex)
         if rowIndex == 1 then
             row:SetPoint("TOPLEFT", procScrollFrame, "TOPLEFT", 0, 0)
@@ -3995,7 +4046,7 @@ end
 
 local function createOptionsWindow()
     options = CreateFrame("Frame", "ShinkiliOptionsFrame", UIParent, "BasicFrameTemplateWithInset")
-    options:SetSize(OPTIONS_WIDTH, OPTIONS_HEIGHT)
+    options:SetSize(C.OPTIONS_WIDTH, C.OPTIONS_HEIGHT)
     options:SetPoint("CENTER")
     options:SetMovable(true)
     options:SetClampedToScreen(true)
@@ -4032,8 +4083,8 @@ local function createOptionsWindow()
     makeTab("blacklist", "TAB_BLACKLIST", 3)
 
     local panelTop = -56
-    local panelHeight = OPTIONS_HEIGHT - 112
-    local panelWidth = OPTIONS_WIDTH - 28
+    local panelHeight = C.OPTIONS_HEIGHT - 112
+    local panelWidth = C.OPTIONS_WIDTH - 28
 
     local mainPanel = CreateFrame("Frame", nil, options)
     mainPanel:SetPoint("TOPLEFT", 14, panelTop)

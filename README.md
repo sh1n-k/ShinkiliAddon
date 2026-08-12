@@ -4,14 +4,15 @@ WoW retail addon: turns Blizzard Assisted Combat recommendations into configurab
 
 ## Features
 - Map recommended spells to colors (main box)
-- Spell color mappings are stored **per character** (`Name-Realm`); size, position, overrides, defense/procs/blacklist stay account-wide. **Reset Defaults** clears only the current character's spell mappings (other characters keep theirs)
+- Settings are stored **per character and per spec** (`Name-Realm` → spec): spell colour mappings, defense, procs and the exclusion lists all live there, as do the main/defense box placement and the exclusion keybind. Only cast-state **overrides**, language and the minimap button are account-wide
+- **Reset Defaults** restores the account-wide items and wipes the current character's profile **for every spec**; other characters are untouched
 - **Map current** / `/sk map` assigns the current Assisted Combat / SimC **pick** (not a proc override color) to the next free color
 - Yellow `ShinkiliInterruptIndicator` above the main box uses real **Show/Hide** when the target cast is known-interruptible (KeySim); hidden when shielded or when the flag is secret. Spell label rises above the signal only while it is shown
 - **SimC-verified pick**: reads what WoW 12.0 still exposes (secret-safe cooldown/buff probes, secondary resources, range, action-bar usability, locally reconstructed cooldowns/charges/DoTs) and lets the SimC priority override Blizzard's Assisted Combat pick only when every condition **that survived into the bundled data** is proven and the spell is castable right now — otherwise it defers to AC, so the signal is never worse than plain Assist. See `AGENTS.md` for what the upstream flattener drops.
 - `/sk why` explains the current pick: reason, secret-probe health, tracker state, the candidate pool with castability, and per-gate verdicts
 - Defense tab: separate priority color box for usable defensive skills
 - Procs tab: active spell overlays override the main box
-- Blacklist tab with keybind toggle + center toast
+- **Exclusions** tab, two lists: a permanent blacklist that always applies, and a cooldown list gated by the master switch (`/sk blacklist on|off`, keybind toggle, centre toast). Upgrading from an older build moves the old single list into the cooldown list, so nothing becomes permanently excluded behind your back
 - Frame layer (strata/level) for main and defense boxes
 - English / Korean UI language (saved)
 - Minimap button and `/sk` for settings
