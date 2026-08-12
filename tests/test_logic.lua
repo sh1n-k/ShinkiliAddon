@@ -421,6 +421,97 @@ id, reason = Logic.pickRecommendation(50, 60, {}, simcEntries, {
 check("SimC entries outside the pool are skipped", id == 50 and reason == "ac_primary")
 
 --------------------------------------------------------------------------------
+-- Stage C floor: never promote an entry SimC ranks BELOW Blizzard's own pick.
+--
+-- Stage C walks past a higher entry because its gates could not be READ, not
+-- because SimC rated it lower. Without a floor the walk lands on whatever is
+-- merely legible further down and overwrites a pick SimC agrees is better.
+--------------------------------------------------------------------------------
+
+-- AC picked rank 2; rank 3 is verified but is a downgrade -> AC keeps the box.
+id, reason = Logic.pickRecommendation(200, nil, {300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom({[200] = "unknown"}),
+})
+check("SimC cannot promote below the AC pick", id == 200 and reason == "ac_primary")
+
+-- Same shape, but the verified entry is ABOVE the AC pick: still an upgrade.
+id, reason = Logic.pickRecommendation(300, nil, {100}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom({[300] = "unknown"}),
+})
+check("SimC still promotes above the AC pick", id == 100 and reason == "simc_verified")
+
+-- AC pick is not in the SimC list at all: no rank to compare, so no floor.
+id, reason = Logic.pickRecommendation(50, nil, {300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
+})
+check("an AC pick outside the list imposes no floor", id == 300 and reason == "simc_verified")
+
+-- An EXCLUDED primary is not the recommendation any more, so it cannot anchor
+-- the floor -- otherwise blacklisting a spell would also suppress its
+-- replacement and leave the box on a spell the user asked to never see.
+id, reason = Logic.pickRecommendation(200, nil, {300}, simcEntries, {
+    simcAssist = true,
+    blacklistEntries = {{spellId = 200, enabled = true}},
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
+})
+check("an excluded AC pick imposes no floor", id == 300 and reason == "simc_verified")
+
+-- Likewise when the game says the primary cannot be cast: the hard filter
+-- already dropped it from the pool, so the floor must not resurrect it.
+id, reason = Logic.pickRecommendation(200, nil, {300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom({[200] = "on_cd"}),
+    gateVerdict = gatesFrom(),
+})
+check("an uncastable AC pick imposes no floor", id == 300 and reason == "simc_verified")
+
+-- The floor is a rank comparison, not an identity one: the AC pick itself still
+-- reports ac_primary when its own gates verify.
+id, reason = Logic.pickRecommendation(200, nil, {300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
+})
+check("the AC pick may still win on its own rank", id == 200 and reason == "ac_primary")
+
+-- Floor at rank 1 shuts the override out entirely.
+id, reason = Logic.pickRecommendation(100, nil, {200, 300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom({[100] = "unknown"}),
+})
+check("a rank-1 AC pick closes Stage C", id == 100 and reason == "ac_primary")
+
+-- No primary at all: the lookahead is a weaker signal and does not anchor a
+-- floor, so the walk runs the whole list and rank 2 (the highest verified entry
+-- in the pool) wins -- exactly as it did before the floor existed.
+id, reason = Logic.pickRecommendation(nil, 200, {300}, simcEntries, {
+    simcAssist = true,
+    castability = castabilityFrom(),
+    gateVerdict = gatesFrom(),
+})
+check("lookahead alone imposes no floor", id == 200 and reason == "simc_verified")
+
+-- Diagnostics carry the floor so /sk why can explain a suppressed override.
+do
+    local _, _, floorDetail = Logic.pickRecommendation(200, nil, {300}, simcEntries, {
+        simcAssist = true,
+        castability = castabilityFrom(),
+        gateVerdict = gatesFrom({[200] = "unknown"}),
+        collectDetail = true,
+    })
+    check("detail reports the AC rank", floorDetail and floorDetail.acRank == 2)
+    check("detail stops listing below the floor", floorDetail and #floorDetail.simc == 1)
+end
+
+--------------------------------------------------------------------------------
 -- Hard castability filter
 --------------------------------------------------------------------------------
 

@@ -4685,7 +4685,13 @@ local function printWhyReport()
             return chatLines, exportLines
         end
 
-        addBoth(string.format("  simc: %s/%s, %d entries", specKey or "?", context or "?", #simcEntries))
+        -- The floor Stage C stopped at. Without it a suppressed override reads
+        -- as "SimC found nothing", which is the one thing this report exists to
+        -- disambiguate.
+        local acRank = detail and detail.acRank
+        addBoth(string.format("  simc: %s/%s, %d entries, ac rank %s",
+            specKey or "?", context or "?", #simcEntries,
+            acRank and tostring(acRank) or "-"))
         for index, entry in ipairs(simcEntries) do
             local entryId = type(entry) == "table" and entry.id or entry
             local displayId = Eval.getDisplaySpellId(entryId)
@@ -4693,12 +4699,13 @@ local function printWhyReport()
             for _, gate in ipairs(Eval.describeEntry(entry)) do
                 marks[#marks + 1] = gate.kind .. "=" .. gate.verdict
             end
-            addListed(index, #simcEntries, string.format("    %s (%s) gates=%s cast=%s%s%s",
+            addListed(index, #simcEntries, string.format("    %s (%s) gates=%s cast=%s%s%s%s",
                 getSpellNameSafe(displayId),
                 tostring(displayId),
                 Eval.evaluateEntry(entry),
                 Eval.getCastability(displayId),
                 #marks > 0 and ("  [" .. table.concat(marks, " ") .. "]") or "",
+                (acRank and index > acRank) and "  (below ac)" or "",
                 (spellId == displayId) and "  <== pick" or ""))
         end
 

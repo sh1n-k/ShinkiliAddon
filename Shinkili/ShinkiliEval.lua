@@ -392,6 +392,33 @@ local function isSpellCooldownBlocked(spellId)
     return memoTriState(cooldownCache, spellId, computeCooldownBlocked)
 end
 
+--- Is the player under a loss-of-control effect (stun / fear / silence / disarm)?
+--- Plain read; unreadable counts as "not locked out", which keeps the old
+--- behaviour rather than inventing a lockout that is not there.
+---
+--- Deliberately NOT extended to `HasOverrideActionBar`: an override bar really
+--- does take the player's own spells away, so the usability reads are honest
+--- there and suppressing them would surface defensives that cannot be pressed.
+local function computeLockedOut()
+    if not (C_LossOfControl and C_LossOfControl.GetActiveLossOfControlDataCount) then
+        return false
+    end
+    local ok, count = pcall(C_LossOfControl.GetActiveLossOfControlDataCount)
+    if not ok then
+        return false
+    end
+    return (Secret.plainNumber(count) or 0) > 0
+end
+
+local function isLockedOut()
+    local cached = passScalars.lockedOut
+    if cached == nil then
+        cached = computeLockedOut()
+        passScalars.lockedOut = cached
+    end
+    return cached
+end
+
 local function computeSpellCastability(spellId)
     local displayId = Eval.getDisplaySpellId(spellId)
     local usableDisplayId = displayId
@@ -422,6 +449,30 @@ local function computeSpellCastability(spellId)
         if notEnoughPower == true then
             resourceShort = true
         elseif notEnoughPower == false then
+            -- While the player is stunned/feared/silenced the game reports EVERY
+            -- spell unusable, so this verdict describes the player, not the
+            -- spell -- and hard-filtering on it empties the defense box at the
+            -- exact moment an escape or an immunity is the answer. Downgrade to
+            -- unknown, which shows the box without ever letting SimC promote
+            -- (promotion still requires `ready`). Ownership already ran above,
+            -- so an unlearned spell cannot slip through here.
+            --
+            -- The other two hard blocks must still be asked FIRST. Range and the
+            -- locally reconstructed cooldown stay honest while the player is
+            -- CC'd, and `IsSpellUsable` never reported cooldown in the first
+            -- place -- so returning unknown straight away would let a defensive
+            -- that is genuinely down paint the box for the whole stun. They are
+            -- asked inside this branch, not before it, so the common path costs
+            -- no extra probe.
+            if isLockedOut() then
+                if Secret.isSpellOutOfRange(spellId) == true then
+                    return CAST_OUT_OF_RANGE
+                end
+                if isSpellCooldownBlocked(spellId) == true then
+                    return CAST_ON_COOLDOWN
+                end
+                return CAST_UNKNOWN
+            end
             return CAST_UNUSABLE
         else
             -- Cannot cast, reason unreadable. Blocking here would hard-filter a
@@ -480,6 +531,46 @@ function Eval.isPickable(spellId)
     return CAST_BLOCKING[Eval.getCastability(spellId)] ~= true
 end
 
+--- Defensives whose own buff OUTLIVES their cooldown: the button comes back up
+--- while the mitigation is still on the player, and re-pressing REPLACES the
+--- effect, throwing away whatever was left of it. Keyed by the id that is
+--- pressed; the value is the aura that lands on the player (they differ only for
+--- the two tank buttons). None of these stack.
+---
+--- Ironfur and Bone Shield are deliberately absent: stacking those is real play,
+--- and stack counts are secret in combat, so buff presence alone cannot justify
+--- hiding them. Rune Tap is here for the opposite reason -- its buff is short,
+--- but it carries two charges, so the on-cooldown filter never parks it and a
+--- second press just overwrites the first.
+local DEFENSE_SINK_AURA = {
+    [2565] = 132404,    -- Shield Block
+    [203720] = 203819,  -- Demon Spikes
+    [11426] = 11426,    -- Ice Barrier
+    [235313] = 235313,  -- Blazing Barrier
+    [235450] = 235450,  -- Prismatic Barrier
+    [194679] = 194679,  -- Rune Tap
+}
+
+--- True when this defensive's own mitigation is CONFIRMED still running. Same
+--- rule as the SimC self-redundancy veto: only a proven-active buff suppresses
+--- the entry. An unreadable aura never does, so in combat with auras secret this
+--- simply falls back to today's behaviour instead of blanking the box.
+function Eval.isDefenseRedundant(spellId)
+    spellId = tonumber(spellId)
+    if not spellId then
+        return false
+    end
+    local sinkAura = DEFENSE_SINK_AURA[spellId]
+    if not sinkAura then
+        local displayId = Eval.getDisplaySpellId(spellId)
+        sinkAura = displayId and DEFENSE_SINK_AURA[displayId]
+    end
+    if not sinkAura then
+        return false
+    end
+    return memoTriState(buffCache, sinkAura, Secret.isBuffActive) == true
+end
+
 --- Defense box availability. Stricter than the main box: a defensive you cannot
 --- afford is not an answer, so `no_resource` hides it too. `unknown` still shows
 --- -- when every probe is blind, a dark defense box is worse than an optimistic
@@ -489,7 +580,12 @@ function Eval.isUsableForDisplay(spellId)
         return false
     end
     local verdict = Eval.getCastability(spellId)
-    return verdict == CAST_READY or verdict == CAST_UNKNOWN
+    if verdict ~= CAST_READY and verdict ~= CAST_UNKNOWN then
+        return false
+    end
+    -- Castable, but pressing it right now would overwrite mitigation that is
+    -- already running. Hiding it lets the next defensive in the list surface.
+    return not Eval.isDefenseRedundant(spellId)
 end
 
 local function probeSpellOverlayed(spellId)
@@ -706,8 +802,21 @@ local function evaluateSimcGate(gate, entryId)
         return boolVerdict(compareNumbers(fraction * 100, gate.op, gate.n))
     end
 
-    if kind == "resource" then
+    -- `resource` carries the countable pips (combo points, runes, shards) and
+    -- `power` the continuous bars (rage, energy, fury, mana). They arrive as the
+    -- same {res,op,n} comparison against the current amount, and every token
+    -- either kind emits is already in Secret's power-type map, so one branch
+    -- answers both.
+    if kind == "resource" or kind == "power" then
         if not (gate.res and gate.op and gate.n) then
+            return GATE_UNKNOWN
+        end
+        -- `deficit` compares max-minus-current and `ispct` a percentage of max.
+        -- Both need the maximum, which Secret deliberately does not hand out
+        -- (the UnitPower/UnitPowerMax scaling for fractional resources is
+        -- unverified). Reading either as a plain current-amount test would
+        -- invert the condition, so neither is evaluable.
+        if gate.deficit or gate.ispct then
             return GATE_UNKNOWN
         end
         local count = Secret.getResourceCount(gate.res)

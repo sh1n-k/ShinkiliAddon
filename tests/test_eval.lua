@@ -56,7 +56,7 @@ local cooldownStructs = {}
 local charges = {}
 local ranges = {}
 local auras = {}
-local powers = {[4] = {current = 4, max = 5}}
+local powers = {[1] = {current = 60, max = 100}, [4] = {current = 4, max = 5}}
 
 C_Spell = {
     IsSpellUsable = function(spellId)
@@ -388,6 +388,83 @@ check("main box drops an on-cooldown spell", Eval.isPickable(103) == false)
 check("main box keeps an unreadable spell", Eval.isPickable(106) == true)
 
 --------------------------------------------------------------------------------
+-- Self-buff redundancy: a defensive whose own mitigation outlives its cooldown
+-- must not be offered again while that buff is confirmed up -- re-pressing it
+-- replaces the shield. Shield Block (2565) applies aura 132404.
+--------------------------------------------------------------------------------
+
+freshPass()
+cooldownStructs[2565] = {isActive = false}
+check("defensive shows while its buff is absent", Eval.isUsableForDisplay(2565) == true)
+
+freshPass()
+auras[132404] = {auraInstanceID = 900}
+check("defensive hides while its own buff runs", Eval.isUsableForDisplay(2565) == false)
+check("redundancy is reported separately", Eval.isDefenseRedundant(2565) == true)
+
+-- Only the mapped pair suppresses; an unrelated defensive is untouched.
+check("unmapped defensive ignores the buff", Eval.isUsableForDisplay(100) == true)
+
+-- Unreadable must never suppress: with auras secret the lookup returns nil while
+-- the buff is up, and treating that as "active" would blank the box for all of
+-- combat -- the same failure the defense policy was written to avoid.
+freshPass()
+auras[132404] = nil
+C_Secrets.ShouldAurasBeSecret = function() return true end
+check("unreadable buff does not suppress", Eval.isUsableForDisplay(2565) == true)
+C_Secrets.ShouldAurasBeSecret = function() return false end
+
+--------------------------------------------------------------------------------
+-- Loss of control: the game reports every spell unusable while the player is
+-- stunned, so that verdict says nothing about any one spell. The defense box
+-- must survive it -- being stunned is when an escape matters most.
+--------------------------------------------------------------------------------
+
+freshPass()
+usable[120] = {false, false}
+cooldownStructs[120] = {isActive = false}
+check("structurally unusable defensive hides when free", Eval.isUsableForDisplay(120) == false)
+
+C_LossOfControl = {
+    GetActiveLossOfControlDataCount = function() return 1 end,
+}
+freshPass()
+check("locked out downgrades unusable to unknown", Eval.getCastability(120) == "unknown")
+check("defensive survives a lockout", Eval.isUsableForDisplay(120) == true)
+
+-- The downgrade must not resurrect a spell the player never learned: ownership
+-- is checked before usability, so it still hard-filters under a lockout.
+IsPlayerSpell = function(spellId) return spellId ~= 121 end
+freshPass()
+cooldownStructs[121] = {isActive = false}
+check("lockout does not resurrect an unlearned spell", Eval.getCastability(121) == "unusable")
+IsPlayerSpell = nil
+
+-- A real cooldown is locally reconstructed and stays honest while CC'd, so it
+-- must keep filtering -- otherwise the box offers a defensive that is down for
+-- the whole stun. This needs a spell that reads BOTH ways: `IsSpellUsable` says
+-- "cannot cast" (as it does for everything under CC) AND the cooldown is really
+-- running. Checking a spell that only fails the cooldown test proves nothing --
+-- it never enters the downgrade branch at all.
+freshPass()
+usable[122] = {false, false}
+cooldownStructs[122] = {isActive = true, startTime = 0, duration = 30}
+check("lockout does not mask a real cooldown", Eval.getCastability(122) == "on_cd")
+check("a down defensive stays hidden under lockout", Eval.isUsableForDisplay(122) == false)
+
+-- Range is honest under CC too, and out-of-range outranks the downgrade.
+freshPass()
+usable[123] = {false, false}
+cooldownStructs[123] = {isActive = false}
+ranges[123] = false
+check("lockout does not mask out of range", Eval.getCastability(123) == "out_of_range")
+ranges[123] = nil
+
+C_LossOfControl = nil
+freshPass()
+check("lockout clears when control returns", Eval.isUsableForDisplay(120) == false)
+
+--------------------------------------------------------------------------------
 -- Nameplate counting under secret values
 --------------------------------------------------------------------------------
 
@@ -625,6 +702,28 @@ check("secret resource is unknown",
     Eval.evaluateEntry({id = 242, gates = {{t = "resource", res = "energy", op = ">=", n = 50}}}) == "unknown")
 check("unmapped resource is unknown",
     Eval.evaluateEntry({id = 243, gates = {{t = "resource", res = "bananas", op = ">=", n = 1}}}) == "unknown")
+
+-- power: the continuous bars, same comparison path as `resource`
+freshPass()
+check("power gate passes on a readable comparison",
+    Eval.evaluateEntry({id = 244, gates = {{t = "power", res = "rage", op = ">=", n = 40}}}) == "pass")
+check("power gate fails on a readable comparison",
+    Eval.evaluateEntry({id = 245, gates = {{t = "power", res = "rage", op = ">=", n = 90}}}) == "fail")
+check("secret power is unknown",
+    Eval.evaluateEntry({id = 246, gates = {{t = "power", res = "energy", op = ">=", n = 50}}}) == "unknown")
+-- deficit and ispct measure `n` against the maximum. Evaluating either as a
+-- current-amount comparison would invert the SimC line, so both stay unknown
+-- even though the resource itself reads fine.
+check("deficit-flagged power gate is unknown",
+    Eval.evaluateEntry({id = 247, gates = {{t = "power", res = "rage", op = ">", n = 15, deficit = true}}}) == "unknown")
+check("percent-flagged power gate is unknown",
+    Eval.evaluateEntry({id = 248, gates = {{t = "power", res = "rage", op = "<", n = 50, ispct = true}}}) == "unknown")
+check("deficit-flagged resource gate is unknown",
+    Eval.evaluateEntry({id = 249, gates = {{t = "resource", res = "combo_points", op = "=", n = 1, deficit = true}}}) == "unknown")
+-- Aura stack counts are secret in 12.0: the gate is carried in the data so the
+-- entry is not silently promoted without it, but it is never evaluable.
+check("stack gate is unknown",
+    Eval.evaluateEntry({id = 252, gates = {{t = "stack", id = 435222, op = "=", n = 2}}}) == "unknown")
 
 -- targets
 freshPass()

@@ -4,10 +4,14 @@
 --
 -- entry = {id, gates = {...}, delegated = bool}
 --   gates: {t="cd"} | {t="buff",id,neg} | {t="dot",id} | {t="execute"}
---          | {t="resource",res,op,n} | {t="targets",op,n}
+--          | {t="resource",res,op,n} | {t="power",res,op,n}
+--          | {t="stack",id,op,n} | {t="targets",op,n}
 --   The source drops the reference id from `cd`, the polarity from
 --   `dot`, and the operator from `execute`, so those read as unknown at
---   runtime. `targets` is never emitted today. See AGENTS.md.
+--   runtime. `targets` is never emitted today. `stack` is carried but
+--   not evaluated: aura stack counts are secret in 12.0. A `resource` or
+--   `power` gate flagged deficit/ispct measures `n` against the maximum
+--   and is likewise not evaluable. See AGENTS.md.
 --   delegated: the SimC condition also needs a value the client cannot
 --   read, so this ordering is NOT verifiable and must never outrank
 --   Blizzard's live Assisted Combat pick.
@@ -93,7 +97,7 @@ ShinkiliSimcData.specs = {
       {id=370965,gates={{t="buff",id=191427,neg=true},{t="cd"}},delegated=true},
       {id=232893,delegated=true},
       {id=195072,delegated=true},
-      {id=258860,gates={{t="cd"}},delegated=true},
+      {id=258860,gates={{t="power",res="fury",op=">=",n=35},{t="cd"}},delegated=true},
       {id=198013,delegated=true},
       {id=185123,delegated=true},
       {id=188499,delegated=true},
@@ -108,7 +112,7 @@ ShinkiliSimcData.specs = {
       {id=191427,delegated=true},
       {id=370965,gates={{t="buff",id=191427,neg=true},{t="cd"}},delegated=true},
       {id=195072,delegated=true},
-      {id=258860,gates={{t="cd"}},delegated=true},
+      {id=258860,gates={{t="power",res="fury",op=">=",n=35},{t="cd"}},delegated=true},
       {id=198013,delegated=true},
       {id=185123,delegated=true},
       {id=232893,delegated=true},
@@ -121,9 +125,9 @@ ShinkiliSimcData.specs = {
       {id=232893,delegated=true},
       {id=187827,delegated=true},
       {id=442294,gates={{t="buff",id=442294}},delegated=true},
-      {id=247454,delegated=true},
+      {id=247454,gates={{t="power",res="fury",op=">",n=75}},delegated=true},
       {id=258920},
-      {id=212084,delegated=true},
+      {id=212084,gates={{t="power",res="fury",op=">=",n=85}}},
       {id=204596},
       {id=207407},
       {id=198793,gates={{t="cd"}}},
@@ -181,7 +185,7 @@ ShinkiliSimcData.specs = {
       {id=194223},
       {id=191034,delegated=true},
       {id=78674,delegated=true},
-      {id=194153,delegated=true},
+      {id=194153,gates={{t="power",res="astral_power",op="<",n=80}}},
       {id=391528,delegated=true},
       {id=274281,delegated=true},
       {id=274282,delegated=true},
@@ -244,7 +248,7 @@ ShinkiliSimcData.specs = {
       {id=1253799,delegated=true},
       {id=50334,gates={{t="cd"}},delegated=true},
       {id=77758},
-      {id=6807,delegated=true},
+      {id=6807,gates={{t="power",res="rage",op=">=",n=40}},delegated=true},
       {id=33917,gates={{t="dot",id=1252871}}},
       {id=1822,gates={{t="buff",id=768,neg=true},{t="cd"}},delegated=true},
       {id=22568,delegated=true},
@@ -261,7 +265,7 @@ ShinkiliSimcData.specs = {
       {id=1253799,delegated=true},
       {id=50334,gates={{t="cd"}},delegated=true},
       {id=77758},
-      {id=6807,delegated=true},
+      {id=6807,gates={{t="power",res="rage",op=">=",n=40}},delegated=true},
       {id=33917,gates={{t="dot",id=1252871}}},
       {id=1822,gates={{t="buff",id=768,neg=true},{t="cd"}},delegated=true},
       {id=22568,delegated=true},
@@ -371,7 +375,6 @@ ShinkiliSimcData.specs = {
       {id=186289,delegated=true},
       {id=34026,delegated=true},
       {id=1250646,delegated=true},
-      {id=1251592},
       {id=259495,delegated=true},
       {id=1261193,delegated=true},
       {id=186270,delegated=true},
@@ -385,7 +388,7 @@ ShinkiliSimcData.specs = {
       {id=30451,delegated=true},
       {id=321507,delegated=true},
       {id=365350},
-      {id=12051,gates={{t="buff",id=365350,neg=true},{t="cd"}},delegated=true},
+      {id=12051,gates={{t="power",res="mana",op="<",n=10,ispct=true},{t="buff",id=365350,neg=true},{t="cd"}},delegated=true},
       {id=44425,delegated=true},
       {id=205025,delegated=true},
     },
@@ -544,9 +547,9 @@ ShinkiliSimcData.specs = {
     st = {
       {id=32379,delegated=true},
       {id=335467,gates={{t="dot",id=335467}},delegated=true},
-      {id=1227280,delegated=true},
+      {id=1227280,gates={{t="dot",id=34914}},delegated=true},
       {id=263165,delegated=true},
-      {id=589,gates={{t="dot",id=589},{t="execute"},{t="dot",id=34914}}},
+      {id=589,gates={{t="dot",id=589},{t="execute"}},delegated=true},
       {id=8092,delegated=true},
       {id=34914,gates={{t="dot",id=34914},{t="execute"}},delegated=true},
       {id=132157},
@@ -559,9 +562,9 @@ ShinkiliSimcData.specs = {
       {id=228260,delegated=true},
       {id=32379,delegated=true},
       {id=335467,gates={{t="dot",id=335467}},delegated=true},
-      {id=1227280,delegated=true},
+      {id=1227280,gates={{t="dot",id=34914}},delegated=true},
       {id=263165,delegated=true},
-      {id=589,gates={{t="dot",id=589},{t="execute"},{t="dot",id=34914}}},
+      {id=589,gates={{t="dot",id=589},{t="execute"}},delegated=true},
       {id=8092,delegated=true},
       {id=34914,gates={{t="dot",id=34914},{t="execute"}},delegated=true},
       {id=132157},
@@ -570,7 +573,7 @@ ShinkiliSimcData.specs = {
   },
   ["ROGUE_1"] = {
     st = {
-      {id=381623,delegated=true},
+      {id=1298826,gates={{t="power",res="energy",op="<",n=50,ispct=true}},delegated=true},
       {id=8676,delegated=true},
       {id=360194,gates={{t="dot",id=703},{t="dot",id=1943},{t="cd"}},delegated=true},
       {id=385627,gates={{t="dot",id=703},{t="dot",id=1943},{t="buff",id=32645}},delegated=true},
@@ -578,10 +581,10 @@ ShinkiliSimcData.specs = {
       {id=703,delegated=true},
       {id=1943,gates={{t="resource",res="combo_points",op=">=",n=5},{t="dot",id=1943},{t="execute"}},delegated=true},
       {id=1247227,delegated=true},
-      {id=5938,delegated=true},
+      {id=5938,gates={{t="resource",res="combo_points",op="=",n=1,deficit=true}},delegated=true},
       {id=51723},
       {id=1329,delegated=true},
-      {id=32645,delegated=true},
+      {id=32645},
     },
   },
   ["ROGUE_2"] = {
@@ -620,15 +623,15 @@ ShinkiliSimcData.specs = {
   ["ROGUE_3"] = {
     st = {
       {id=121471,gates={{t="cd"}},delegated=true},
-      {id=185313,delegated=true},
-      {id=1856,gates={{t="resource",res="combo_points",op="<=",n=2}},delegated=true},
+      {id=185313,gates={{t="power",res="energy",op=">=",n=30}},delegated=true},
+      {id=1856,gates={{t="power",res="energy",op=">=",n=50},{t="resource",res="combo_points",op="<=",n=2}},delegated=true},
       {id=185438,delegated=true},
       {id=197835,gates={{t="cd"}},delegated=true},
       {id=196819,delegated=true},
       {id=280719,gates={{t="cd"}},delegated=true},
       {id=441776,delegated=true},
       {id=319175,delegated=true},
-      {id=426591,delegated=true},
+      {id=426591,gates={{t="resource",res="combo_points",op=">=",n=3,deficit=true}}},
       {id=200758,delegated=true},
       {id=53,delegated=true},
     },
@@ -640,7 +643,7 @@ ShinkiliSimcData.specs = {
       {id=470411,delegated=true},
       {id=470057,delegated=true},
       {id=114050,delegated=true},
-      {id=51505,delegated=true},
+      {id=51505,gates={{t="power",res="maelstrom",op=">",n=15,deficit=true}},delegated=true},
       {id=452201,delegated=true},
       {id=188196,gates={{t="buff",id=191634}},delegated=true},
       {id=117014},
@@ -653,8 +656,8 @@ ShinkiliSimcData.specs = {
       {id=470411,delegated=true},
       {id=470057,delegated=true},
       {id=114050,delegated=true},
-      {id=117014,delegated=true},
-      {id=61882,delegated=true},
+      {id=117014,gates={{t="stack",id=452201,op="<",n=2}},delegated=true},
+      {id=61882,gates={{t="stack",id=452201,op="<",n=2}},delegated=true},
       {id=51505,delegated=true},
       {id=452201,delegated=true},
       {id=188443,gates={{t="buff",id=191634}},delegated=true},
@@ -697,7 +700,7 @@ ShinkiliSimcData.specs = {
   },
   ["WARLOCK_1"] = {
     st = {
-      {id=316099,delegated=true},
+      {id=1259790,delegated=true},
       {id=27243,delegated=true},
       {id=198590,delegated=true},
       {id=686,delegated=true},
@@ -710,7 +713,7 @@ ShinkiliSimcData.specs = {
       {id=442726},
     },
     aoe = {
-      {id=316099,delegated=true},
+      {id=1259790,delegated=true},
       {id=27243,delegated=true},
       {id=198590,delegated=true},
       {id=686,delegated=true},
@@ -740,7 +743,7 @@ ShinkiliSimcData.specs = {
   ["WARLOCK_3"] = {
     st = {
       {id=6353,gates={{t="resource",res="soul_shard",op="<=",n=4}}},
-      {id=116858,gates={{t="execute"}},delegated=true},
+      {id=116858,gates={{t="execute",op=">",n=20}},delegated=true},
       {id=17962,delegated=true},
       {id=1122},
       {id=442726},
@@ -824,11 +827,11 @@ ShinkiliSimcData.specs = {
       {id=85288},
       {id=190411},
       {id=107570,gates={{t="buff",id=227847}}},
-      {id=435222,delegated=true},
+      {id=435222,gates={{t="stack",id=435222,op="=",n=2}}},
       {id=6343,gates={{t="buff",id=107574}}},
     },
     aoe = {
-      {id=190411,delegated=true},
+      {id=190411,gates={{t="stack",id=190411,op="=",n=0}}},
       {id=1719},
       {id=107574},
       {id=184367,delegated=true},
@@ -841,7 +844,7 @@ ShinkiliSimcData.specs = {
       {id=23881},
       {id=85288},
       {id=107570,gates={{t="buff",id=227847}}},
-      {id=435222,delegated=true},
+      {id=435222,gates={{t="stack",id=435222,op="=",n=2}}},
       {id=6343,delegated=true},
     },
   },
@@ -849,30 +852,30 @@ ShinkiliSimcData.specs = {
     st = {
       {id=107574,delegated=true},
       {id=228920},
+      {id=435222,gates={{t="stack",id=435222,op="=",n=2}}},
       {id=1160},
       {id=376079},
       {id=436358,delegated=true},
       {id=385952},
       {id=23922},
-      {id=6343},
-      {id=6572,gates={{t="buff",id=228920}}},
-      {id=163201,delegated=true},
+      {id=6343,delegated=true},
+      {id=163201},
+      {id=6572,gates={{t="buff",id=6572}}},
       {id=384110},
       {id=64382},
       {id=20243},
-      {id=435222},
     },
     aoe = {
       {id=107574,delegated=true},
       {id=228920},
+      {id=435222,gates={{t="stack",id=435222,op="=",n=2}}},
       {id=1160},
       {id=376079},
-      {id=435222,delegated=true},
       {id=436358,delegated=true},
       {id=385952},
-      {id=6343,gates={{t="dot"}}},
+      {id=6343,gates={{t="buff",id=228920},{t="dot"}}},
+      {id=6572,gates={{t="buff",id=6572}}},
       {id=23922,delegated=true},
-      {id=6572,delegated=true},
       {id=163201,delegated=true},
       {id=384110},
       {id=64382},

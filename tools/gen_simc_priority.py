@@ -81,6 +81,15 @@ def extract_entries(block: str, name: str) -> list[tuple[int, list[dict], bool]]
                     gate["id"] = int(im.group(1))
                 if "neg=true" in gobj:
                     gate["neg"] = True
+                # `deficit` (max minus current) and `ispct` (percent of max)
+                # change what `n` is measured against. Dropping them would leave
+                # a plain current-amount comparison behind -- a silent inversion
+                # of the SimC line -- so they are carried through and the runtime
+                # declines to evaluate the gate.
+                if "deficit=true" in gobj:
+                    gate["deficit"] = True
+                if "ispct=true" in gobj:
+                    gate["ispct"] = True
                 # Resource gates carry a comparison the runtime evaluates against
                 # the readable secondary-resource count.
                 rm = re.search(r'res="(\w+)"', gobj)
@@ -93,6 +102,15 @@ def extract_entries(block: str, name: str) -> list[tuple[int, list[dict], bool]]
                 if nm:
                     raw = nm.group(1)
                     gate["n"] = float(raw) if "." in raw else int(raw)
+                else:
+                    # Health-threshold gates spell the same number `pct`. The
+                    # runtime's execute branch already compares a percentage
+                    # against `n`, so carrying it across as `n` is what makes an
+                    # otherwise complete gate evaluable instead of unknown.
+                    pm = re.search(r"pct=(-?[\d.]+)", gobj)
+                    if pm:
+                        raw = pm.group(1)
+                        gate["n"] = float(raw) if "." in raw else int(raw)
                 gates.append(gate)
             p = q
 
@@ -168,10 +186,14 @@ def main() -> int:
         "--",
         "-- entry = {id, gates = {...}, delegated = bool}",
         "--   gates: {t=\"cd\"} | {t=\"buff\",id,neg} | {t=\"dot\",id} | {t=\"execute\"}",
-        "--          | {t=\"resource\",res,op,n} | {t=\"targets\",op,n}",
+        "--          | {t=\"resource\",res,op,n} | {t=\"power\",res,op,n}",
+        "--          | {t=\"stack\",id,op,n} | {t=\"targets\",op,n}",
         "--   The source drops the reference id from `cd`, the polarity from",
         "--   `dot`, and the operator from `execute`, so those read as unknown at",
-        "--   runtime. `targets` is never emitted today. See AGENTS.md.",
+        "--   runtime. `targets` is never emitted today. `stack` is carried but",
+        "--   not evaluated: aura stack counts are secret in 12.0. A `resource` or",
+        "--   `power` gate flagged deficit/ispct measures `n` against the maximum",
+        "--   and is likewise not evaluable. See AGENTS.md.",
         "--   delegated: the SimC condition also needs a value the client cannot",
         "--   read, so this ordering is NOT verifiable and must never outrank",
         "--   Blizzard's live Assisted Combat pick.",
@@ -194,6 +216,10 @@ def main() -> int:
             bits.append("n=%s" % (repr(value) if isinstance(value, float) else str(value)))
         if g.get("neg"):
             bits.append("neg=true")
+        if g.get("deficit"):
+            bits.append("deficit=true")
+        if g.get("ispct"):
+            bits.append("ispct=true")
         return "{" + ",".join(bits) + "}"
 
     total_delegated = 0

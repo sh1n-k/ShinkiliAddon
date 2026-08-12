@@ -37,6 +37,7 @@ read_globals = {
     "issecretvalue",
     "C_Secrets",
     "C_UnitAuras",
+    "C_LossOfControl",
     "InCombatLockdown",
     "UnitPower",
     "UnitPowerMax",

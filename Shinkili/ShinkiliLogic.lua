@@ -1053,6 +1053,8 @@ local BLOCKING_CASTABILITY = {
 ---   B) Hard filter: drop everything the game confirms cannot be cast right now.
 ---   C) SimC override: walk the SimC priority order and take the first entry
 ---      that is in the pool, has every gate proven, and is castable right now.
+---      The walk stops at Blizzard's own pick: an entry ranked below it is not
+---      an upgrade, and unreadable gates are why we got past the better lines.
 ---   D) Otherwise Blizzard's own order: primary, lookahead, first survivor.
 ---
 --- options:
@@ -1180,7 +1182,36 @@ function Logic.pickRecommendation(primarySpellId, lookaheadSpellId, rotationList
     -- Stage C: SimC may override, but only on a fully proven entry.
     if simcAssist and type(simcEntries) == "table" and #simcEntries > 0
         and type(gateVerdict) == "function" then
-        for _, entry in ipairs(simcEntries) do
+        -- Where Blizzard's own pick sits in the SimC order, and the floor for
+        -- this search. Stage C skips an entry for want of a READABLE gate, not
+        -- because SimC ranked it lower -- so promoting something BELOW the AC
+        -- pick trades a line SimC rates higher for one that merely happened to
+        -- be legible, which is a downgrade dressed as a verification. Entries
+        -- ABOVE it are genuine upgrades and still promote.
+        --
+        -- Only a pick that survived into the candidate pool can anchor this. An
+        -- excluded or uncastable primary is not the recommendation any more, so
+        -- letting it cap the search would suppress the very override meant to
+        -- replace it.
+        local acRank
+        if primaryDisplay and candidateSet[primaryDisplay] then
+            for index, entry in ipairs(simcEntries) do
+                local rawId = type(entry) == "table" and entry.id or entry
+                if displayId(rawId) == primaryDisplay then
+                    acRank = index
+                    break
+                end
+            end
+        end
+        if detail then
+            detail.acRank = acRank
+        end
+        for index, entry in ipairs(simcEntries) do
+            if acRank and index > acRank then
+                -- Everything from here down is ranked below what AC already
+                -- picked. The list is ordered, so stop rather than keep looking.
+                break
+            end
             local rawId = type(entry) == "table" and entry.id or entry
             local spellId = displayId(rawId)
             if spellId and candidateSet[spellId] then
