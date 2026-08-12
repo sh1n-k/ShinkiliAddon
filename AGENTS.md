@@ -26,14 +26,14 @@
 
 ## SavedVariables
 - `ShinkiliDB` (primary). Legacy `BlizzShinDB` is still accepted once at load.
-- **Account-wide:** `locale`, minimap fields, cast/channel `overrides`.
+- **Account-wide:** `locale`, minimap fields, cast/channel `overrides`, `interruptEnabled` (yellow interrupt bar).
 - **Per character** (`charProfiles[Name-Realm].placement`): main/defense box size/position/lock/layer, blacklist toggle key.
 - **Per character+spec** (`charProfiles[…].specs[CLASS_N]`): `mappings`, `procs.entries`, `defense.entries` (+ enabled), `blacklist.entries` / `cooldowns` / cooldown-filter `enabled`, `simcAssist`.
-- Migration: v2 creates `charProfiles`; v3 stops sharing account-wide defense/proc/blacklist seeds across other characters. Spec lists lazy-clone from that character’s `seed`. Unknown-class defense/proc rows are pruned with `IsPlayerSpell` on bind.
+- Migration: v2 creates `charProfiles`; v3 stops sharing account-wide defense/proc/blacklist seeds across other characters. Spec lists lazy-clone from that character’s `seed`. Defense/proc rows are **not** pruned on bind (that used to persist into profiles and delete talent-swapped rows); unlearned entries stay listed and simply fail castability.
 
 ## Runtime model
 - **Main box (best single pick)** — `Logic.pickRecommendation`, four stages:
-  1. **Pool**: AC primary → highlight lookahead → `GetRotationSpells`, normalised to display ids, excluded entries removed. The defense and proc boxes are user-curated lists and deliberately ignore the exclusions.
+  1. **Pool**: AC primary → highlight lookahead → `GetRotationSpells`, normalised to display ids, excluded entries removed. The defense box is a user-curated list and deliberately ignores exclusions.
   1b. **Ownership**: a spell the player has not actually learned (talent choice nodes leave the unpicked active id unlearned while `IsSpellUsable` still reports it ready) is `unusable`. `IsPlayerSpell` and `IsSpellKnownOrOverridesKnown` are both consulted; neither answering means unknown, not "unlearned".
   2. **Hard filter**: drop anything the game *confirms* cannot be cast (`unusable` / `out_of_range` / `on_cd`). `no_resource` is transient and never removes a spell.
   3. **SimC override**: first SimC entry that is in the pool, has **every** gate proven `pass`, and reads `ready`. Reason `simc_verified`.
@@ -44,10 +44,11 @@
 - **The one waiver**: if the hard filter empties the pool, AC primary is shown even though it read as uncastable. Every probe reading "blocked" is far more likely to mean our probes are blind than that the whole rotation is down, and a blank box helps nobody. SimC can never exploit this — it still requires `ready`.
 - **Defense box** is stricter than the main box: `no_resource` hides an entry there (a defensive you cannot afford is not an answer), while `unknown` still shows it.
 - **`delegated` entries** (SimC condition needs a value 12.0 hides) are always `unknown` — they can never override AC. 446 of 682 bundled entries (65%). Of the remaining 236, **207 are promotable** and 29 are blocked by the lossy-gate rule above.
-- **Proc** display override still wins on top of everything, and is castability-filtered with the **main-box** policy (`Eval.isPickable`): hidden on `unusable`/`out_of_range`/`on_cd`, shown on `no_resource`. Filtering procs on affordability would blink a procced spender at 20Hz.
+- **Proc** display override still wins on top of the assist pick, and is castability-filtered with the **main-box** policy (`Eval.isPickable`): hidden on `unusable`/`out_of_range`/`on_cd`, shown on `no_resource`. Filtering procs on affordability would blink a procced spender at 20Hz. **Permanent/cooldown exclusions also apply** via `Logic.isSpellExcluded` so a blacklisted skill cannot paint the main box through a proc. Overlay detection tries book id and display/override id.
+- **Defense box placement** is applied only on load/option edits/drag-stop — never on the 20Hz refresh path (that snap-back broke drag). Unlocked or options-open shows a placeholder when no defense is active (symmetric with main unlock preview).
 - **Layers**: per-box `frameStrata` + `frameLevel` (options on Main / Defense).
-- **Exclusions**: two lists. `blacklist.entries` is permanent and always applied; `blacklist.cooldowns` is gated by `blacklist.enabled` (keybind toggle, `/sk blacklist`, centre toast). `Logic.sanitizeSettings` migrates a legacy single list into `cooldowns` so an upgrade cannot silently make old entries permanent.
-- **Options tabs**: Main / Defense / Procs / Blacklist; language + minimap in footer.
+- **Exclusions**: two lists. `blacklist.entries` is permanent and always applied; `blacklist.cooldowns` is gated by `blacklist.enabled` (keybind toggle, `/sk blacklist`, centre toast). `Logic.sanitizeSettings` migrates a legacy single list into `cooldowns` so an upgrade cannot silently make old entries permanent. Override bindings are deferred out of combat (`pendingBlacklistBinding`).
+- **Options tabs**: Main / Defense / Procs / Blacklist; language + minimap in footer. Interrupt signal toggle lives on Main.
 
 ## Git Safety
 - Small doc/metadata-only changes may land on `main`.

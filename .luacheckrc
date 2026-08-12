@@ -91,4 +91,6 @@ read_globals = {
     "UnitCastingInfo",
     "UnitChannelInfo",
     "UnitEmpoweredStageDurations",
+    "StaticPopupDialogs",
+    "StaticPopup_Show",
 }

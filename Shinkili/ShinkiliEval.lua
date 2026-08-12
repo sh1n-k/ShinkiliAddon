@@ -492,25 +492,37 @@ function Eval.isUsableForDisplay(spellId)
     return verdict == CAST_READY or verdict == CAST_UNKNOWN
 end
 
-function Eval.isProcActive(spellId)
+local function probeSpellOverlayed(spellId)
     if not spellId then
         return false
     end
-
     if IsSpellOverlayed then
         local ok, active = pcall(IsSpellOverlayed, spellId)
         if ok and Secret.plainBool(active) == true then
             return true
         end
     end
-
     if C_SpellActivationOverlay and C_SpellActivationOverlay.IsSpellOverlayed then
         local ok, active = pcall(C_SpellActivationOverlay.IsSpellOverlayed, spellId)
         if ok and Secret.plainBool(active) == true then
             return true
         end
     end
+    return false
+end
 
+function Eval.isProcActive(spellId)
+    if not spellId then
+        return false
+    end
+    -- Overlay may fire on the book id or the action-bar override id; try both.
+    local displayId = Eval.getDisplaySpellId(spellId)
+    if probeSpellOverlayed(displayId) then
+        return true
+    end
+    if displayId ~= spellId and probeSpellOverlayed(spellId) then
+        return true
+    end
     return false
 end
 

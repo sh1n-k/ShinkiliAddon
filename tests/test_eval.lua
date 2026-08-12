@@ -548,6 +548,24 @@ IsSpellOverlayed = function()
     return false
 end
 
+-- Overlay may fire on the override/display id rather than the book id.
+overrides[500] = 501
+IsSpellOverlayed = function(spellId)
+    return spellId == 501
+end
+Eval.beginPass()
+check("proc active via display override id", Eval.isProcActive(500) == true)
+IsSpellOverlayed = function(spellId)
+    return spellId == 500
+end
+Eval.beginPass()
+check("proc active via book id when display differs", Eval.isProcActive(500) == true)
+overrides[500] = nil
+IsSpellOverlayed = function()
+    return false
+end
+Eval.beginPass()
+
 -- dot
 freshPass()
 dotState[400] = true

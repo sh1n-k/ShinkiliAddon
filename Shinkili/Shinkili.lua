@@ -74,6 +74,8 @@ local defaults = {
     },
     -- Rank mode: among AC live candidates, Assist order (false) or SimC order (true).
     simcAssist = true,
+    -- Account-wide: yellow interrupt bar above the main box.
+    interruptEnabled = true,
 }
 
 local function L(key)
@@ -165,6 +167,7 @@ local state = {
     blacklistEditorSpellId = nil,
     cooldownEditorSpellId = nil,
     bindingListen = false,
+    pendingBlacklistBinding = false,
 }
 
 local addon = CreateFrame("Frame")
@@ -313,14 +316,26 @@ local blacklistToggleButton = CreateFrame("Button", C.BLACKLIST_TOGGLE_BUTTON, U
 blacklistToggleButton:SetSize(1, 1)
 blacklistToggleButton:Hide()
 
-local bindingCaptureFrame = CreateFrame("Frame", "ShinkiliBindingCapture", UIParent)
+local bindingCaptureFrame = CreateFrame("Frame", "ShinkiliBindingCapture", UIParent, "BackdropTemplate")
 bindingCaptureFrame:SetAllPoints(UIParent)
 bindingCaptureFrame:EnableMouse(true)
 bindingCaptureFrame:EnableKeyboard(true)
 bindingCaptureFrame:EnableMouseWheel(true)
 bindingCaptureFrame:SetFrameStrata("TOOLTIP")
 bindingCaptureFrame:SetFrameLevel(1000)
+bindingCaptureFrame:SetBackdrop({
+    bgFile = "Interface/Buttons/WHITE8X8",
+    edgeFile = "Interface/Buttons/WHITE8X8",
+    edgeSize = 1,
+})
+bindingCaptureFrame:SetBackdropColor(0, 0, 0, 0.55)
+bindingCaptureFrame:SetBackdropBorderColor(0, 0, 0, 0)
 bindingCaptureFrame:Hide()
+bindingCaptureFrame.text = bindingCaptureFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalHuge")
+bindingCaptureFrame.text:SetPoint("CENTER", 0, 40)
+bindingCaptureFrame.text:SetTextColor(0.20, 1.00, 0.60, 1)
+bindingCaptureFrame.text:SetShadowOffset(1, -1)
+bindingCaptureFrame.text:SetShadowColor(0, 0, 0, 0.95)
 
 local options
 local optionsTabs = {}
@@ -459,46 +474,11 @@ function feature.bindMappings()
 
     local spec = Logic.ensureSpecProfile(charProfile, specKey)
     Logic.applySpecToSettings(settings, spec)
-    -- Drop defense/proc rows for spells this character cannot use (e.g. other-class
-    -- leftovers from the v2 shared-seed migrate).
-    local function spellKnown(spellId)
-        if IsPlayerSpell then
-            local ok, known = pcall(IsPlayerSpell, spellId)
-            if ok and known == true then
-                return true
-            end
-        end
-        if IsSpellKnownOrOverridesKnown then
-            local ok, known = pcall(IsSpellKnownOrOverridesKnown, spellId)
-            if ok and known == true then
-                return true
-            end
-        end
-        return false
-    end
-    -- Display-only prune. It must NOT be written back into `spec` or
-    -- `charProfile.seed`: unlearning a spell by swapping a talent would delete
-    -- the row permanently, and swapping back would not restore it. The seed
-    -- would also shrink to the intersection of every spec ever visited.
-    --
-    -- If the filter would empty a non-empty list, the spellbook is most likely
-    -- not loaded yet -- keep the list rather than blanking the box.
-    if IsPlayerSpell or IsSpellKnownOrOverridesKnown then
-        local function pruneForDisplay(entries)
-            if type(entries) ~= "table" or #entries == 0 then
-                return entries
-            end
-            local filtered = Logic.filterPriorityEntriesKnown(entries, spellKnown)
-            if type(filtered) ~= "table" or #filtered == 0 then
-                return entries
-            end
-            return filtered
-        end
-        settings.defense = type(settings.defense) == "table" and settings.defense or {}
-        settings.defense.entries = pruneForDisplay(settings.defense.entries)
-        settings.procs = type(settings.procs) == "table" and settings.procs or {}
-        settings.procs.entries = pruneForDisplay(settings.procs.entries)
-    end
+    -- Do not prune defense/proc entries here. sanitizeSettings always follows
+    -- bind with persistMappings, so mutating live lists would write the pruned
+    -- set into charProfiles and permanently drop rows when a talent is swapped
+    -- or the spellbook is briefly incomplete at login. Unlearned rows stay listed;
+    -- runtime castability already treats them as unusable.
     -- Keep legacy charMappings pointer in sync for older paths.
     settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
     settings.charMappings[key] = settings.mappings
@@ -610,6 +590,12 @@ function feature.getTargetCastInterruptInfo()
 end
 
 function feature.refreshInterrupt()
+    local settings = db()
+    if not settings or settings.interruptEnabled == false then
+        feature.interruptBox:Hide()
+        feature.setLabelForInterrupt(false)
+        return
+    end
     local isCasting, notInterruptible, accessible = feature.getTargetCastInterruptInfo()
     local show = Logic.shouldShowInterruptIndicator(isCasting, notInterruptible, accessible)
     -- The box is parented to UIParent and only anchored to the square, so it
@@ -677,6 +663,18 @@ end
 local function getColorName(colorIndex)
     local entry = COLOR_PALETTE[colorIndex]
     return entry and entry.name or "Unknown"
+end
+
+function feature.colorMenuText(colorIndex)
+    local name = getColorName(colorIndex)
+    local entry = COLOR_PALETTE[colorIndex]
+    if not entry or not entry.rgba then
+        return name
+    end
+    local r = math.floor((entry.rgba[1] or 0) * 255 + 0.5)
+    local g = math.floor((entry.rgba[2] or 0) * 255 + 0.5)
+    local b = math.floor((entry.rgba[3] or 0) * 255 + 0.5)
+    return string.format("|cff%02x%02x%02x■■|r %s", r, g, b, name)
 end
 
 local function getMarkerColor(markerIndex)
@@ -859,7 +857,8 @@ local function compareSpellEntries(left, right)
 end
 
 -- searchText nil → Main tab search; pass "" for unfiltered pickers (Defense/Procs).
-local function getFilteredAvailableSpells(searchText)
+-- stableNameSort: name order for option pickers (combat must not reshuffle the list).
+local function getFilteredAvailableSpells(searchText, stableNameSort)
     local query = searchText
     if query == nil then
         query = state.searchText
@@ -872,7 +871,16 @@ local function getFilteredAvailableSpells(searchText)
         end
     end
 
-    table.sort(filtered, compareSpellEntries)
+    if stableNameSort then
+        table.sort(filtered, function(left, right)
+            if left.name == right.name then
+                return left.spellId < right.spellId
+            end
+            return left.name < right.name
+        end)
+    else
+        table.sort(filtered, compareSpellEntries)
+    end
     return filtered
 end
 
@@ -939,9 +947,24 @@ end
 --- A proc overlay means the game is highlighting the spell, but it can still be
 --- out of range or on cooldown. Filter those, but NOT `no_resource`: this is a
 --- main-box path and resource starvation refills every GCD, so excluding on it
---- would make the colour blink off and on at 20Hz.
+--- would make the colour blink off and on at 20Hz. Permanent/cooldown exclusions
+--- also apply: a blacklisted skill must never paint the main box via proc.
 local function isProcUsable(spellId)
-    return Eval.isProcActive(spellId) and Eval.isPickable(spellId)
+    if not Eval.isProcActive(spellId) or not Eval.isPickable(spellId) then
+        return false
+    end
+    local blacklist = db().blacklist
+    if type(blacklist) ~= "table" then
+        return true
+    end
+    return not Logic.isSpellExcluded(
+        blacklist.entries,
+        blacklist.cooldowns,
+        spellId,
+        blacklist.enabled == true,
+        Eval.getDisplaySpellId(spellId),
+        Eval.getDisplaySpellId
+    )
 end
 
 local function getActiveProcEntry()
@@ -1343,6 +1366,10 @@ local function onDefenseDragStop(self)
     defense.x = math.floor((x or 0) + 0.5)
     defense.y = math.floor((y or 0) + 0.5)
     applyDefensePosition()
+    feature.persistMappings()
+    if updateDefenseRows then
+        updateDefenseRows()
+    end
 end
 
 defenseBox:SetScript("OnDragStart", function(self)
@@ -1411,6 +1438,7 @@ local function saveToggleKey(bindingKey)
     blacklist.toggleKey = bindingKey
     stopBindingListen()
     applyBlacklistBinding()
+    feature.persistMappings()
     if updateBlacklistRows then
         updateBlacklistRows()
     end
@@ -1418,6 +1446,7 @@ end
 
 local function startBindingListen()
     state.bindingListen = true
+    bindingCaptureFrame.text:SetText(L("BLACKLIST_CAPTURING"))
     bindingCaptureFrame:Show()
     bindingCaptureFrame:EnableKeyboard(true)
     if bindingCaptureFrame.SetPropagateKeyboardInput then
@@ -1441,7 +1470,12 @@ local function startBindingListen()
         if not mapped then
             return
         end
-        saveToggleKey(buildModifierPrefix() .. mapped)
+        -- Match Blizzard keybind UI: plain left/right click is not a bind.
+        local mods = buildModifierPrefix()
+        if mods == "" and (mapped == "BUTTON1" or mapped == "BUTTON2") then
+            return
+        end
+        saveToggleKey(mods .. mapped)
     end)
 
     bindingCaptureFrame:SetScript("OnMouseWheel", function(_, delta)
@@ -1477,6 +1511,11 @@ showBlacklistToast = function(enabled)
 end
 
 applyBlacklistBinding = function()
+    if InCombatLockdown and InCombatLockdown() then
+        state.pendingBlacklistBinding = true
+        return
+    end
+    state.pendingBlacklistBinding = false
     if ClearOverrideBindings then
         ClearOverrideBindings(addon)
     end
@@ -1514,14 +1553,21 @@ refreshDefenseBox = function()
     local entry = getActiveDefenseEntry()
     state.defenseSpellId = entry and entry.spellId or nil
 
-    local showForEdit = state.optionsOpen and defense and defense.enabled ~= false and defense.locked == false
     if not defense or defense.enabled == false then
+        -- StopMovingOrSizing does not fire OnDragStop; commit coords first.
+        if defenseBox.IsMoving and defenseBox:IsMoving() then
+            onDefenseDragStop(defenseBox)
+        end
         defenseBox:Hide()
+        defenseBox:EnableMouse(false)
         return
     end
 
-    applyDefenseSize()
-    applyDefensePosition()
+    -- Do not re-apply saved position/size here: the 20Hz ticker calls this path
+    -- and would snap the box back while the user is dragging (main box never
+    -- reapplies position on refresh for the same reason).
+    local unlockedPreview = defense.locked == false
+    local showPlaceholder = unlockedPreview or state.optionsOpen
 
     if entry then
         defenseBox:Show()
@@ -1529,16 +1575,22 @@ refreshDefenseBox = function()
         defenseBox:SetAlpha(1)
         defenseLabel:SetText(getSpellNameSafe(entry.spellId))
         defenseLabel:Show()
-    elseif showForEdit or (state.optionsOpen and defense.enabled ~= false) then
+    elseif showPlaceholder then
         defenseBox:Show()
         defenseBox:SetBackdropColor(0.25, 0.25, 0.25, 0.55)
         defenseBox:SetAlpha(1)
         defenseLabel:SetText(L("DEFENSE_BOX_LABEL"))
         defenseLabel:Show()
     else
+        if defenseBox.IsMoving and defenseBox:IsMoving() then
+            onDefenseDragStop(defenseBox)
+        end
         defenseBox:Hide()
     end
 
+    if defense.locked ~= false and defenseBox.IsMoving and defenseBox:IsMoving() then
+        onDefenseDragStop(defenseBox)
+    end
     defenseBox:EnableMouse(defense.locked == false)
 end
 
@@ -1770,6 +1822,7 @@ local function onDragStop(self)
     settings.y = math.floor((y or 0) + 0.5)
     applyPosition()
     syncPlacementControls()
+    feature.persistMappings()
 end
 
 square:SetScript("OnDragStart", function(self)
@@ -1781,9 +1834,9 @@ square:SetScript("OnDragStop", onDragStop)
 
 local function getEditorMode()
     if state.editorSpellId and findMappingIndexBySpell(state.editorSpellId) then
-        return "Save"
+        return L("SAVE")
     end
-    return "Add"
+    return L("ADD")
 end
 
 local function getEditorPreviewState()
@@ -1870,7 +1923,7 @@ local function initializeColorDropdown(dropdown)
         local mappingIndex = findMappingIndexBySpell(state.editorSpellId)
 
         local clearInfo = UIDropDownMenu_CreateInfo()
-        clearInfo.text = "Unassigned"
+        clearInfo.text = L("UNASSIGNED")
         clearInfo.value = 1
         clearInfo.func = function()
             state.editorColorIndex = nil
@@ -1883,7 +1936,7 @@ local function initializeColorDropdown(dropdown)
 
         for colorIndex = 2, #COLOR_PALETTE do
             local info = UIDropDownMenu_CreateInfo()
-            info.text = getColorName(colorIndex)
+            info.text = feature.colorMenuText(colorIndex)
             info.value = colorIndex
             info.func = function()
                 state.editorColorIndex = colorIndex
@@ -2372,6 +2425,9 @@ local function refreshAllEditorViews()
         if main.simcAssistCheck then
             main.simcAssistCheck:SetChecked(db().simcAssist ~= false)
         end
+        if main.interruptEnable then
+            main.interruptEnable:SetChecked(db().interruptEnabled ~= false)
+        end
         if main.simcStatus then
             local key = getSimcSpecKey()
             local has = key and ShinkiliSimcData and Logic.getSimcSpecTable(ShinkiliSimcData, key)
@@ -2413,6 +2469,7 @@ local function resetToDefaults()
     settings.minimapAngle = defaults.minimapAngle
     settings.frameStrata = defaults.frameStrata
     settings.frameLevel = defaults.frameLevel
+    settings.interruptEnabled = defaults.interruptEnabled
     settings.overrides = copyDefaultOverrides()
     settings.mappings = {}
     local charKey = feature.characterKey()
@@ -2488,6 +2545,56 @@ local function resetToDefaults()
     end
     refreshVisibility()
     refreshMinimapButton()
+end
+
+function feature.confirmResetToDefaults()
+    local dialogs = _G.StaticPopupDialogs
+    local showPopup = _G.StaticPopup_Show
+    if not dialogs or not showPopup then
+        resetToDefaults()
+        print("|cff33ff99Shinkili|r " .. L("MSG_RESET"))
+        return
+    end
+    dialogs["SHINKILI_RESET_CONFIRM"] = {
+        text = L("RESET_CONFIRM"),
+        button1 = L("RESET_CONFIRM_YES"),
+        button2 = L("RESET_CONFIRM_NO"),
+        OnAccept = function()
+            resetToDefaults()
+            print("|cff33ff99Shinkili|r " .. L("MSG_RESET"))
+        end,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true,
+        exclusive = true,
+        preferredIndex = 3,
+    }
+    showPopup("SHINKILI_RESET_CONFIRM")
+end
+
+function feature.addExcludeSpell(listKey, spellId)
+    if not spellId then
+        return false
+    end
+    local blacklist = getBlacklistSettings()
+    local entries
+    if listKey == "cooldowns" then
+        blacklist.cooldowns = blacklist.cooldowns or {}
+        entries = blacklist.cooldowns
+    else
+        blacklist.entries = blacklist.entries or {}
+        entries = blacklist.entries
+    end
+    for _, entry in ipairs(entries) do
+        if entry.spellId == spellId then
+            entry.enabled = true
+            sanitizeSettings({skipBind = true})
+            return true
+        end
+    end
+    table.insert(entries, {spellId = spellId, enabled = true})
+    sanitizeSettings({skipBind = true})
+    return true
 end
 
 local function createMainOptionsPanel(frame)
@@ -2742,7 +2849,7 @@ local function createMainOptionsPanel(frame)
     frame.empowerOverrideRow = empowerOverrideRow
 
     local placementColumn = CreateFrame("Frame", nil, frame)
-    placementColumn:SetSize(placementColumnWidth, 170)
+    placementColumn:SetSize(placementColumnWidth, 220)
     placementColumn:SetPoint("TOPLEFT", overridesColumn, "TOPRIGHT", 16, 0)
 
     local placementLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -2759,6 +2866,7 @@ local function createMainOptionsPanel(frame)
         db().size = clamp(value, 24, 300)
         applySize()
         syncPlacementControls()
+        feature.persistMappings()
         refreshVisibility()
     end)
     sizeHolder:SetPoint("TOPLEFT", placementLabel, "BOTTOMLEFT", 0, -8)
@@ -2774,6 +2882,7 @@ local function createMainOptionsPanel(frame)
         db().x = clamp(value, -1000, 1000)
         applyPosition()
         syncPlacementControls()
+        feature.persistMappings()
     end)
     xHolder:SetPoint("LEFT", sizeHolder, "RIGHT", 10, 0)
     xInput = xHolder.input
@@ -2788,6 +2897,7 @@ local function createMainOptionsPanel(frame)
         db().y = clamp(value, -1000, 1000)
         applyPosition()
         syncPlacementControls()
+        feature.persistMappings()
     end)
     yHolder:SetPoint("LEFT", xHolder, "RIGHT", 10, 0)
     yInput = yHolder.input
@@ -2798,6 +2908,7 @@ local function createMainOptionsPanel(frame)
     markerToggleCheck.text:SetText(L("SHOW_MARKER"))
     markerToggleCheck:SetScript("OnClick", function(self)
         db().showMarker = self:GetChecked() and true or false
+        feature.persistMappings()
         refreshVisibility()
     end)
 
@@ -2807,6 +2918,7 @@ local function createMainOptionsPanel(frame)
     lockToggleButton:SetText(L("UNLOCK"))
     lockToggleButton:SetScript("OnClick", function()
         db().locked = not db().locked
+        feature.persistMappings()
         updateEditorControls()
         refreshVisibility()
     end)
@@ -2829,6 +2941,7 @@ local function createMainOptionsPanel(frame)
                 UIDropDownMenu_SetSelectedValue(strataDropdown, strata)
                 UIDropDownMenu_SetText(strataDropdown, strata)
                 applyFrameLayers()
+                feature.persistMappings()
             end
             info.checked = (db().frameStrata or defaults.frameStrata) == strata
             UIDropDownMenu_AddButton(info, level)
@@ -2848,16 +2961,33 @@ local function createMainOptionsPanel(frame)
         end
         db().frameLevel = Logic.sanitizeFrameLevel(value, defaults.frameLevel)
         applyFrameLayers()
+        feature.persistMappings()
         if frame.mainLevelInput then
             frame.mainLevelInput:SetText(tostring(db().frameLevel))
         end
     end)
-    levelHolder:SetPoint("LEFT", strataDropdown, "RIGHT", 0, 8)
+    levelHolder:SetPoint("TOPLEFT", strataDropdown, "BOTTOMLEFT", 16, -4)
     frame.mainLevelInput = levelHolder.input
     frame.mainLevelHolder = levelHolder
     if frame.mainLevelInput then
         frame.mainLevelInput:SetText(tostring(db().frameLevel or defaults.frameLevel))
     end
+
+    local interruptCheck = CreateFrame("CheckButton", addonName .. "InterruptEnable", placementColumn, "UICheckButtonTemplate")
+    interruptCheck:SetPoint("TOPLEFT", levelHolder, "BOTTOMLEFT", -4, -10)
+    interruptCheck.text:SetText(L("INTERRUPT_ENABLE"))
+    interruptCheck:SetScript("OnClick", function(self)
+        db().interruptEnabled = self:GetChecked() and true or false
+        feature.refreshInterrupt()
+    end)
+    frame.interruptEnable = interruptCheck
+
+    local interruptHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    interruptHint:SetPoint("TOPLEFT", interruptCheck, "BOTTOMLEFT", 4, -2)
+    interruptHint:SetWidth(placementColumnWidth - 8)
+    interruptHint:SetJustifyH("LEFT")
+    interruptHint:SetText(L("INTERRUPT_HINT"))
+    frame.interruptHint = interruptHint
 end
 
 local function upsertPriorityEntry(listKey, spellId, colorIndex)
@@ -3022,6 +3152,7 @@ local function createDefenseOptionsPanel(frame)
     enableCheck.text:SetText(L("DEFENSE_ENABLE"))
     enableCheck:SetScript("OnClick", function(self)
         db().defense.enabled = self:GetChecked() and true or false
+        feature.persistMappings()
         refreshDefenseBox()
     end)
     frame.defenseEnable = enableCheck
@@ -3031,6 +3162,7 @@ local function createDefenseOptionsPanel(frame)
     lockCheck.text:SetText(L("DEFENSE_LOCKED"))
     lockCheck:SetScript("OnClick", function(self)
         db().defense.locked = self:GetChecked() and true or false
+        feature.persistMappings()
         refreshDefenseBox()
     end)
     frame.defenseLock = lockCheck
@@ -3050,6 +3182,7 @@ local function createDefenseOptionsPanel(frame)
         end
         db().defense.size = clamp(value, 24, 300)
         applyDefenseSize()
+        feature.persistMappings()
         refreshDefenseBox()
     end)
     sizeHolder:SetPoint("TOPLEFT", placementLabel, "BOTTOMLEFT", 0, -6)
@@ -3068,6 +3201,7 @@ local function createDefenseOptionsPanel(frame)
         db().defense.point = "CENTER"
         db().defense.relativePoint = "CENTER"
         applyDefensePosition()
+        feature.persistMappings()
         refreshDefenseBox()
     end)
     xHolder:SetPoint("LEFT", sizeHolder, "RIGHT", 12, 0)
@@ -3086,6 +3220,7 @@ local function createDefenseOptionsPanel(frame)
         db().defense.point = "CENTER"
         db().defense.relativePoint = "CENTER"
         applyDefensePosition()
+        feature.persistMappings()
         refreshDefenseBox()
     end)
     yHolder:SetPoint("LEFT", xHolder, "RIGHT", 12, 0)
@@ -3110,6 +3245,7 @@ local function createDefenseOptionsPanel(frame)
                 UIDropDownMenu_SetSelectedValue(strataDropdown, strata)
                 UIDropDownMenu_SetText(strataDropdown, strata)
                 applyFrameLayers()
+                feature.persistMappings()
             end
             info.checked = ((db().defense and db().defense.frameStrata) or defaults.defense.frameStrata) == strata
             UIDropDownMenu_AddButton(info, level)
@@ -3130,11 +3266,12 @@ local function createDefenseOptionsPanel(frame)
         end
         db().defense.frameLevel = Logic.sanitizeFrameLevel(value, defaults.defense.frameLevel)
         applyFrameLayers()
+        feature.persistMappings()
         if frame.defenseLevelInput then
             frame.defenseLevelInput:SetText(tostring(db().defense.frameLevel))
         end
     end)
-    dLevelHolder:SetPoint("LEFT", strataDropdown, "RIGHT", 0, 8)
+    dLevelHolder:SetPoint("TOPLEFT", strataDropdown, "BOTTOMLEFT", 16, -4)
     frame.defenseLevelInput = dLevelHolder.input
     frame.defenseLevelHolder = dLevelHolder
     if frame.defenseLevelInput then
@@ -3142,7 +3279,7 @@ local function createDefenseOptionsPanel(frame)
     end
 
     local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    editorLabel:SetPoint("TOPLEFT", layerLabel, "BOTTOMLEFT", 0, -40)
+    editorLabel:SetPoint("TOPLEFT", dLevelHolder, "BOTTOMLEFT", 0, -14)
     editorLabel:SetText(L("DEFENSE_ADD"))
     frame.defenseEditorLabel = editorLabel
 
@@ -3156,7 +3293,7 @@ local function createDefenseOptionsPanel(frame)
     UIDropDownMenu_JustifyText(spellDropdown, "LEFT")
     UIDropDownMenu_Initialize(spellDropdown, function(_, level)
         local info = UIDropDownMenu_CreateInfo()
-        for _, spellInfo in ipairs(getFilteredAvailableSpells("")) do
+        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
             info.text = spellInfo.name
             info.value = spellInfo.spellId
             info.func = function()
@@ -3176,12 +3313,12 @@ local function createDefenseOptionsPanel(frame)
     UIDropDownMenu_Initialize(colorDropdown, function(_, level)
         local info = UIDropDownMenu_CreateInfo()
         for index = 2, #COLOR_PALETTE do
-            info.text = COLOR_PALETTE[index].name
+            info.text = feature.colorMenuText(index)
             info.value = index
             info.func = function()
                 state.defenseEditorColorIndex = index
                 UIDropDownMenu_SetSelectedValue(colorDropdown, index)
-                UIDropDownMenu_SetText(colorDropdown, COLOR_PALETTE[index].name)
+                UIDropDownMenu_SetText(colorDropdown, getColorName(index))
             end
             info.checked = state.defenseEditorColorIndex == index
             UIDropDownMenu_AddButton(info, level)
@@ -3279,27 +3416,27 @@ local function createBlacklistOptionsPanel(frame)
     frame.blacklistSubtitle = subtitle
 
     local filterHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    filterHint:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -8)
+    filterHint:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -4)
     filterHint:SetWidth(contentWidth)
     filterHint:SetJustifyH("LEFT")
     filterHint:SetText(L("BLACKLIST_HINT"))
     frame.blacklistFilterHint = filterHint
 
     local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    editorLabel:SetPoint("TOPLEFT", filterHint, "BOTTOMLEFT", 0, -12)
+    editorLabel:SetPoint("TOPLEFT", filterHint, "BOTTOMLEFT", 0, -8)
     editorLabel:SetText(L("BLACKLIST_ADD"))
     frame.blacklistEditorLabel = editorLabel
 
     local editorRow = CreateFrame("Frame", nil, frame)
     editorRow:SetSize(contentWidth, 36)
-    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -4)
+    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -2)
 
     local spellDropdown = CreateFrame("Frame", addonName .. "BlacklistSpellDropdown", editorRow, "UIDropDownMenuTemplate")
     spellDropdown:SetPoint("LEFT", 0, -2)
-    UIDropDownMenu_SetWidth(spellDropdown, 320)
+    UIDropDownMenu_SetWidth(spellDropdown, 280)
     UIDropDownMenu_Initialize(spellDropdown, function(_, level)
         local info = UIDropDownMenu_CreateInfo()
-        for _, spellInfo in ipairs(getFilteredAvailableSpells("")) do
+        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
             info.text = spellInfo.name
             info.value = spellInfo.spellId
             info.func = function()
@@ -3313,36 +3450,39 @@ local function createBlacklistOptionsPanel(frame)
     end)
 
     local addButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
-    addButton:SetSize(90, 22)
+    addButton:SetSize(80, 22)
     addButton:SetPoint("LEFT", spellDropdown, "RIGHT", 4, 2)
     addButton:SetText(L("ADD"))
     addButton:SetScript("OnClick", function()
-        local spellId = state.blacklistEditorSpellId
-        if not spellId then
-            return
+        if feature.addExcludeSpell("entries", state.blacklistEditorSpellId) then
+            updateBlacklistRows()
+            updateSpellState()
         end
-        local blacklist = getBlacklistSettings()
-        for _, entry in ipairs(blacklist.entries) do
-            if entry.spellId == spellId then
-                entry.enabled = true
-                sanitizeSettings({skipBind = true})
-                updateBlacklistRows()
-                updateSpellState()
-                return
-            end
-        end
-        table.insert(blacklist.entries, {spellId = spellId, enabled = true})
-        sanitizeSettings({skipBind = true})
-        updateBlacklistRows()
-        updateSpellState()
     end)
     frame.blacklistAddButton = addButton
 
     -- Two shorter lists so blacklist + cooldown sections fit one tab.
-    local BL_SECTION_ROWS = 4
+    local BL_SECTION_ROWS = 3
+
+    local addCurrentButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
+    addCurrentButton:SetSize(100, 22)
+    addCurrentButton:SetPoint("LEFT", addButton, "RIGHT", 6, 0)
+    addCurrentButton:SetText(L("BLACKLIST_ADD_CURRENT"))
+    addCurrentButton:SetScript("OnClick", function()
+        -- Match the on-screen main box, not only the assist pick under a proc.
+        local spellId = state.activeProcSpellId or state.currentSpellId
+        if not spellId then
+            return
+        end
+        state.blacklistEditorSpellId = spellId
+        feature.addExcludeSpell("entries", spellId)
+        updateBlacklistRows()
+        updateSpellState()
+    end)
+    frame.blacklistAddCurrentButton = addCurrentButton
 
     local listLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    listLabel:SetPoint("TOPLEFT", editorRow, "BOTTOMLEFT", 0, -12)
+    listLabel:SetPoint("TOPLEFT", editorRow, "BOTTOMLEFT", 0, -8)
     listLabel:SetText(L("BLACKLIST_LIST"))
     frame.blacklistListLabel = listLabel
 
@@ -3384,20 +3524,20 @@ local function createBlacklistOptionsPanel(frame)
     emptyBlacklistText:Hide()
 
     local cdSection = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cdSection:SetPoint("TOPLEFT", blacklistScrollFrame, "BOTTOMLEFT", 0, -16)
+    cdSection:SetPoint("TOPLEFT", blacklistScrollFrame, "BOTTOMLEFT", 0, -10)
     cdSection:SetText(L("BLACKLIST_CD_SECTION"))
     frame.blacklistCdSection = cdSection
 
     local enableCheck = CreateFrame("CheckButton", addonName .. "BlacklistEnable", frame, "UICheckButtonTemplate")
-    enableCheck:SetPoint("TOPLEFT", cdSection, "BOTTOMLEFT", 0, -8)
+    enableCheck:SetPoint("TOPLEFT", cdSection, "BOTTOMLEFT", 0, -4)
     enableCheck.text:SetText(L("BLACKLIST_ENABLE"))
     enableCheck:SetScript("OnClick", function(self)
-        setBlacklistEnabled(self:GetChecked() and true or false, true)
+        setBlacklistEnabled(self:GetChecked() and true or false, false)
     end)
     frame.blacklistEnable = enableCheck
 
     local keyLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    keyLabel:SetPoint("TOPLEFT", enableCheck, "BOTTOMLEFT", 0, -8)
+    keyLabel:SetPoint("TOPLEFT", enableCheck, "BOTTOMLEFT", 0, -4)
     keyLabel:SetText(L("BLACKLIST_TOGGLE_KEY"))
     frame.blacklistKeyLabel = keyLabel
 
@@ -3409,7 +3549,7 @@ local function createBlacklistOptionsPanel(frame)
 
     local bindButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
     bindButton:SetSize(100, 22)
-    bindButton:SetPoint("TOPLEFT", keyLabel, "BOTTOMLEFT", 0, -8)
+    bindButton:SetPoint("TOPLEFT", keyLabel, "BOTTOMLEFT", 0, -4)
     bindButton:SetText(L("BLACKLIST_BIND"))
     bindButton:SetScript("OnClick", function()
         if state.bindingListen then
@@ -3428,39 +3568,47 @@ local function createBlacklistOptionsPanel(frame)
         getBlacklistSettings().toggleKey = nil
         stopBindingListen()
         applyBlacklistBinding()
+        feature.persistMappings()
         updateBlacklistRows()
     end)
     frame.blacklistClearButton = clearButton
 
     local bindHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    bindHint:SetPoint("TOPLEFT", bindButton, "BOTTOMLEFT", 0, -6)
+    bindHint:SetPoint("TOPLEFT", bindButton, "BOTTOMLEFT", 0, -4)
     bindHint:SetWidth(contentWidth)
     bindHint:SetJustifyH("LEFT")
     bindHint:SetText(L("BLACKLIST_BIND_HINT"))
     frame.blacklistBindHint = bindHint
 
+    local bindWarn = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    bindWarn:SetPoint("TOPLEFT", bindHint, "BOTTOMLEFT", 0, -2)
+    bindWarn:SetWidth(contentWidth)
+    bindWarn:SetJustifyH("LEFT")
+    bindWarn:SetText(L("BLACKLIST_BIND_WARN"))
+    frame.blacklistBindWarn = bindWarn
+
     local cdHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    cdHint:SetPoint("TOPLEFT", bindHint, "BOTTOMLEFT", 0, -8)
+    cdHint:SetPoint("TOPLEFT", bindWarn, "BOTTOMLEFT", 0, -4)
     cdHint:SetWidth(contentWidth)
     cdHint:SetJustifyH("LEFT")
     cdHint:SetText(L("BLACKLIST_CD_HINT"))
     frame.blacklistCdHint = cdHint
 
     local cdEditorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cdEditorLabel:SetPoint("TOPLEFT", cdHint, "BOTTOMLEFT", 0, -10)
+    cdEditorLabel:SetPoint("TOPLEFT", cdHint, "BOTTOMLEFT", 0, -6)
     cdEditorLabel:SetText(L("BLACKLIST_CD_ADD"))
     frame.blacklistCdEditorLabel = cdEditorLabel
 
     local cdEditorRow = CreateFrame("Frame", nil, frame)
     cdEditorRow:SetSize(contentWidth, 36)
-    cdEditorRow:SetPoint("TOPLEFT", cdEditorLabel, "BOTTOMLEFT", 0, -4)
+    cdEditorRow:SetPoint("TOPLEFT", cdEditorLabel, "BOTTOMLEFT", 0, -2)
 
     local cdSpellDropdown = CreateFrame("Frame", addonName .. "CooldownExcludeSpellDropdown", cdEditorRow, "UIDropDownMenuTemplate")
     cdSpellDropdown:SetPoint("LEFT", 0, -2)
-    UIDropDownMenu_SetWidth(cdSpellDropdown, 320)
+    UIDropDownMenu_SetWidth(cdSpellDropdown, 280)
     UIDropDownMenu_Initialize(cdSpellDropdown, function(_, level)
         local info = UIDropDownMenu_CreateInfo()
-        for _, spellInfo in ipairs(getFilteredAvailableSpells("")) do
+        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
             info.text = spellInfo.name
             info.value = spellInfo.spellId
             info.func = function()
@@ -3474,34 +3622,35 @@ local function createBlacklistOptionsPanel(frame)
     end)
 
     local cdAddButton = CreateFrame("Button", nil, cdEditorRow, "GameMenuButtonTemplate")
-    cdAddButton:SetSize(90, 22)
+    cdAddButton:SetSize(80, 22)
     cdAddButton:SetPoint("LEFT", cdSpellDropdown, "RIGHT", 4, 2)
     cdAddButton:SetText(L("ADD"))
     cdAddButton:SetScript("OnClick", function()
-        local spellId = state.cooldownEditorSpellId
-        if not spellId then
-            return
+        if feature.addExcludeSpell("cooldowns", state.cooldownEditorSpellId) then
+            updateCooldownExcludeRows()
+            updateSpellState()
         end
-        local blacklist = getBlacklistSettings()
-        blacklist.cooldowns = blacklist.cooldowns or {}
-        for _, entry in ipairs(blacklist.cooldowns) do
-            if entry.spellId == spellId then
-                entry.enabled = true
-                sanitizeSettings({skipBind = true})
-                updateCooldownExcludeRows()
-                updateSpellState()
-                return
-            end
-        end
-        table.insert(blacklist.cooldowns, {spellId = spellId, enabled = true})
-        sanitizeSettings({skipBind = true})
-        updateCooldownExcludeRows()
-        updateSpellState()
     end)
     frame.blacklistCdAddButton = cdAddButton
 
+    local cdAddCurrentButton = CreateFrame("Button", nil, cdEditorRow, "GameMenuButtonTemplate")
+    cdAddCurrentButton:SetSize(100, 22)
+    cdAddCurrentButton:SetPoint("LEFT", cdAddButton, "RIGHT", 6, 0)
+    cdAddCurrentButton:SetText(L("BLACKLIST_ADD_CURRENT"))
+    cdAddCurrentButton:SetScript("OnClick", function()
+        local spellId = state.activeProcSpellId or state.currentSpellId
+        if not spellId then
+            return
+        end
+        state.cooldownEditorSpellId = spellId
+        feature.addExcludeSpell("cooldowns", spellId)
+        updateCooldownExcludeRows()
+        updateSpellState()
+    end)
+    frame.blacklistCdAddCurrentButton = cdAddCurrentButton
+
     local cdListLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    cdListLabel:SetPoint("TOPLEFT", cdEditorRow, "BOTTOMLEFT", 0, -12)
+    cdListLabel:SetPoint("TOPLEFT", cdEditorRow, "BOTTOMLEFT", 0, -6)
     cdListLabel:SetText(L("BLACKLIST_CD_LIST"))
     frame.blacklistCdListLabel = cdListLabel
 
@@ -3646,20 +3795,20 @@ local function createProcOptionsPanel(frame)
     frame.procSubtitle = subtitle
 
     local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    editorLabel:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -10)
+    editorLabel:SetPoint("TOPLEFT", subtitle, "BOTTOMLEFT", 0, -14)
     editorLabel:SetText(L("PROCS_ADD"))
     frame.procEditorLabel = editorLabel
 
     local editorRow = CreateFrame("Frame", nil, frame)
     editorRow:SetSize(contentWidth, 36)
-    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -4)
+    editorRow:SetPoint("TOPLEFT", editorLabel, "BOTTOMLEFT", 0, -6)
 
     local spellDropdown = CreateFrame("Frame", addonName .. "ProcSpellDropdown", editorRow, "UIDropDownMenuTemplate")
     spellDropdown:SetPoint("LEFT", 0, -2)
     UIDropDownMenu_SetWidth(spellDropdown, 300)
     UIDropDownMenu_Initialize(spellDropdown, function(_, level)
         local info = UIDropDownMenu_CreateInfo()
-        for _, spellInfo in ipairs(getFilteredAvailableSpells("")) do
+        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
             info.text = spellInfo.name
             info.value = spellInfo.spellId
             info.func = function()
@@ -3678,12 +3827,12 @@ local function createProcOptionsPanel(frame)
     UIDropDownMenu_Initialize(colorDropdown, function(_, level)
         local info = UIDropDownMenu_CreateInfo()
         for index = 2, #COLOR_PALETTE do
-            info.text = COLOR_PALETTE[index].name
+            info.text = feature.colorMenuText(index)
             info.value = index
             info.func = function()
                 state.procEditorColorIndex = index
                 UIDropDownMenu_SetSelectedValue(colorDropdown, index)
-                UIDropDownMenu_SetText(colorDropdown, COLOR_PALETTE[index].name)
+                UIDropDownMenu_SetText(colorDropdown, getColorName(index))
             end
             info.checked = state.procEditorColorIndex == index
             UIDropDownMenu_AddButton(info, level)
@@ -3790,9 +3939,10 @@ selectOptionsTab = function(tabKey)
     end
     for key, button in pairs(optionsTabs) do
         if key == tabKey then
-            button:Disable()
+            -- Keep enabled so the tab does not look "unavailable"; lock PUSHED state.
+            button:SetButtonState("PUSHED", true)
         else
-            button:Enable()
+            button:SetButtonState("NORMAL", false)
         end
     end
     if tabKey == "defense" and updateDefenseRows then
@@ -3866,6 +4016,11 @@ refreshOptionsLocale = function()
         if main.sizeHolder and main.sizeHolder.label then main.sizeHolder.label:SetText(L("SIZE")) end
         if main.xHolder and main.xHolder.label then main.xHolder.label:SetText(L("X")) end
         if main.yHolder and main.yHolder.label then main.yHolder.label:SetText(L("Y")) end
+        if main.interruptEnable and main.interruptEnable.text then
+            main.interruptEnable.text:SetText(L("INTERRUPT_ENABLE"))
+            main.interruptEnable:SetChecked(db().interruptEnabled ~= false)
+        end
+        if main.interruptHint then main.interruptHint:SetText(L("INTERRUPT_HINT")) end
         if markerToggleCheck and markerToggleCheck.text then
             markerToggleCheck.text:SetText(L("SHOW_MARKER"))
         end
@@ -3938,16 +4093,23 @@ refreshOptionsLocale = function()
         if blacklist.blacklistBindButton then blacklist.blacklistBindButton:SetText(L("BLACKLIST_BIND")) end
         if blacklist.blacklistClearButton then blacklist.blacklistClearButton:SetText(L("BLACKLIST_CLEAR_KEY")) end
         if blacklist.blacklistBindHint then blacklist.blacklistBindHint:SetText(L("BLACKLIST_BIND_HINT")) end
+        if blacklist.blacklistBindWarn then blacklist.blacklistBindWarn:SetText(L("BLACKLIST_BIND_WARN")) end
         if blacklist.blacklistFilterHint then blacklist.blacklistFilterHint:SetText(L("BLACKLIST_HINT")) end
         if blacklist.blacklistEditorLabel then blacklist.blacklistEditorLabel:SetText(L("BLACKLIST_ADD")) end
         if blacklist.blacklistListLabel then blacklist.blacklistListLabel:SetText(L("BLACKLIST_LIST")) end
         if blacklist.blacklistAddButton then blacklist.blacklistAddButton:SetText(L("ADD")) end
+        if blacklist.blacklistAddCurrentButton then
+            blacklist.blacklistAddCurrentButton:SetText(L("BLACKLIST_ADD_CURRENT"))
+        end
         if emptyBlacklistText then emptyBlacklistText:SetText(L("BLACKLIST_EMPTY")) end
         if blacklist.blacklistCdSection then blacklist.blacklistCdSection:SetText(L("BLACKLIST_CD_SECTION")) end
         if blacklist.blacklistCdHint then blacklist.blacklistCdHint:SetText(L("BLACKLIST_CD_HINT")) end
         if blacklist.blacklistCdEditorLabel then blacklist.blacklistCdEditorLabel:SetText(L("BLACKLIST_CD_ADD")) end
         if blacklist.blacklistCdListLabel then blacklist.blacklistCdListLabel:SetText(L("BLACKLIST_CD_LIST")) end
         if blacklist.blacklistCdAddButton then blacklist.blacklistCdAddButton:SetText(L("ADD")) end
+        if blacklist.blacklistCdAddCurrentButton then
+            blacklist.blacklistCdAddCurrentButton:SetText(L("BLACKLIST_ADD_CURRENT"))
+        end
         if emptyCooldownExcludeText then emptyCooldownExcludeText:SetText(L("BLACKLIST_CD_EMPTY")) end
     end
 
@@ -4010,7 +4172,7 @@ local function createOptionsFooter(frame)
     resetButton:SetPoint("BOTTOMRIGHT", -16, 14)
     resetButton:SetSize(140, 24)
     resetButton:SetText(L("RESET_DEFAULTS"))
-    resetButton:SetScript("OnClick", resetToDefaults)
+    resetButton:SetScript("OnClick", feature.confirmResetToDefaults)
     frame.resetButton = resetButton
 
     local closeButton = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
@@ -4556,8 +4718,7 @@ SlashCmdList.SHINKILI = function(msg)
     end
 
     if command == "reset" then
-        resetToDefaults()
-        print("|cff33ff99Shinkili|r " .. L("MSG_RESET"))
+        feature.confirmResetToDefaults()
         return
     end
 
@@ -4614,6 +4775,9 @@ local function initialize()
     ShinkiliDB.charProfiles = type(ShinkiliDB.charProfiles) == "table" and ShinkiliDB.charProfiles or {}
     if ShinkiliDB.simcAssist == nil then
         ShinkiliDB.simcAssist = defaults.simcAssist
+    end
+    if ShinkiliDB.interruptEnabled == nil then
+        ShinkiliDB.interruptEnabled = defaults.interruptEnabled
     end
     ShinkiliDB.cooldownBox = nil
 
@@ -4735,6 +4899,10 @@ addon:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         end
         updateSpellState()
         return
+    end
+
+    if event == "PLAYER_REGEN_ENABLED" and state.pendingBlacklistBinding then
+        applyBlacklistBinding()
     end
 
     if event == "PLAYER_SPECIALIZATION_CHANGED" then

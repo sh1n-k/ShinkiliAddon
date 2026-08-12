@@ -732,6 +732,11 @@ function Logic.sanitizeSettings(settings, config)
         or (config.relativePointDefault or "CENTER")
     settings.locked = settings.locked ~= false
     settings.showMarker = settings.showMarker ~= false
+    if settings.interruptEnabled == nil then
+        settings.interruptEnabled = true
+    else
+        settings.interruptEnabled = settings.interruptEnabled ~= false
+    end
     settings.overrides = type(settings.overrides) == "table" and settings.overrides or {}
 
     for stateKey, defaultConfig in pairs(config.defaultOverrides) do
