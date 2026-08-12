@@ -50,7 +50,6 @@ local defaults = {
         channeling = {enabled = true, colorIndex = 2},
         empower = {enabled = true, colorIndex = 3},
     },
-    mappings = {},
     defense = {
         enabled = true,
         locked = true,
@@ -417,6 +416,18 @@ function feature.characterKey()
     return Logic.characterKey(name, realm)
 end
 
+--- Point the legacy `charMappings[key]` bucket at the live mapping list.
+--- Still load-bearing after the charProfiles migration: `migrateLegacyCharMappings`
+--- uses that pointer identity to tell a live per-character bucket apart from a
+--- pre-migration account-wide list it must move.
+function feature.syncCharMappings(settings, key, list)
+    if type(settings) ~= "table" or type(key) ~= "string" or key == "" then
+        return
+    end
+    settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
+    settings.charMappings[key] = type(list) == "table" and list or {}
+end
+
 --- Bind per-character placement + per-spec lists into the live settings root.
 --- The spec bucket the live settings were last loaded from. Persisting must
 --- target THIS, not whatever GetSpecialization() answers right now:
@@ -452,8 +463,7 @@ function feature.bindMappings()
     if settings.pendingMappingsReset then
         charProfile.seed = Logic.emptySpecProfile()
         charProfile.specs = {}
-        settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
-        settings.charMappings[key] = {}
+        feature.syncCharMappings(settings, key, {})
         settings.pendingMappingsReset = nil
     end
 
@@ -467,8 +477,7 @@ function feature.bindMappings()
         if type(charProfile.seed) == "table" and type(charProfile.seed.mappings) == "table" then
             settings.mappings = Logic.deepCopy(charProfile.seed.mappings)
         end
-        settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
-        settings.charMappings[key] = settings.mappings
+        feature.syncCharMappings(settings, key, settings.mappings)
         return
     end
 
@@ -479,9 +488,7 @@ function feature.bindMappings()
     -- set into charProfiles and permanently drop rows when a talent is swapped
     -- or the spellbook is briefly incomplete at login. Unlearned rows stay listed;
     -- runtime castability already treats them as unusable.
-    -- Keep legacy charMappings pointer in sync for older paths.
-    settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
-    settings.charMappings[key] = settings.mappings
+    feature.syncCharMappings(settings, key, settings.mappings)
 end
 
 --- Write live settings back into char placement + the bound spec bucket.
@@ -512,8 +519,7 @@ function feature.persistMappings()
         end
     end
 
-    settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
-    settings.charMappings[key] = type(settings.mappings) == "table" and settings.mappings or {}
+    feature.syncCharMappings(settings, key, settings.mappings)
 end
 
 function feature.applyInterruptLayout()
@@ -1355,6 +1361,17 @@ local function applyDefenseSize()
     local defense = db().defense
     local size = defense and defense.size or defaults.defense.size
     defenseBox:SetSize(size, size)
+end
+
+--- Push every saved placement value onto the live frames. Run after anything
+--- that can replace the settings root wholesale (load, login, spec swap, reset).
+function feature.applyAllLayout()
+    applySize()
+    applyPosition()
+    applyDefenseSize()
+    applyDefensePosition()
+    applyFrameLayers()
+    applyBlacklistBinding()
 end
 
 local function onDefenseDragStop(self)
@@ -2408,6 +2425,19 @@ local function parseInteger(text)
     return Logic.parseInteger(text)
 end
 
+--- "SimC data for CLASS_N" / "no bundled data" line on the Main tab.
+function feature.refreshSimcStatus(frame)
+    if not (frame and frame.simcStatus) then
+        return
+    end
+    local key = getSimcSpecKey()
+    if key and ShinkiliSimcData and Logic.getSimcSpecTable(ShinkiliSimcData, key) then
+        frame.simcStatus:SetText(string.format(L("SIMC_STATUS_OK"), key))
+    else
+        frame.simcStatus:SetText(L("SIMC_STATUS_MISSING"))
+    end
+end
+
 local function refreshAllEditorViews()
     syncPlacementControls()
     updateEditorControls()
@@ -2428,15 +2458,7 @@ local function refreshAllEditorViews()
         if main.interruptEnable then
             main.interruptEnable:SetChecked(db().interruptEnabled ~= false)
         end
-        if main.simcStatus then
-            local key = getSimcSpecKey()
-            local has = key and ShinkiliSimcData and Logic.getSimcSpecTable(ShinkiliSimcData, key)
-            if has then
-                main.simcStatus:SetText(string.format(L("SIMC_STATUS_OK"), key))
-            else
-                main.simcStatus:SetText(L("SIMC_STATUS_MISSING"))
-            end
-        end
+        feature.refreshSimcStatus(main)
         if main.simcAssistCheck and main.simcAssistCheck.text then
             main.simcAssistCheck.text:SetText(L("SIMC_ASSIST"))
         end
@@ -2473,27 +2495,10 @@ local function resetToDefaults()
     settings.overrides = copyDefaultOverrides()
     settings.mappings = {}
     local charKey = feature.characterKey()
-    settings.charMappings = type(settings.charMappings) == "table" and settings.charMappings or {}
     settings.charProfiles = type(settings.charProfiles) == "table" and settings.charProfiles or {}
-    settings.defense = {
-        enabled = defaults.defense.enabled,
-        locked = defaults.defense.locked,
-        size = defaults.defense.size,
-        point = defaults.defense.point,
-        relativePoint = defaults.defense.relativePoint,
-        x = defaults.defense.x,
-        y = defaults.defense.y,
-        frameStrata = defaults.defense.frameStrata,
-        frameLevel = defaults.defense.frameLevel,
-        entries = {},
-    }
-    settings.procs = {entries = {}}
-    settings.blacklist = {
-        enabled = false,
-        toggleKey = nil,
-        entries = {},
-        cooldowns = {},
-    }
+    settings.defense = Logic.deepCopy(defaults.defense)
+    settings.procs = Logic.deepCopy(defaults.procs)
+    settings.blacklist = Logic.deepCopy(defaults.blacklist)
     settings.simcAssist = defaults.simcAssist
     settings.cooldownBox = nil
 
@@ -2502,7 +2507,7 @@ local function resetToDefaults()
     -- the profile, and the following bind wrote them straight back into the live
     -- settings, so the reset appeared to half-fail.
     if charKey then
-        settings.charMappings[charKey] = settings.mappings
+        feature.syncCharMappings(settings, charKey, settings.mappings)
         settings.charProfiles[charKey] = {
             placement = Logic.captureCharPlacementFromSettings(settings),
             seed = Logic.emptySpecProfile(),
@@ -2531,12 +2536,7 @@ local function resetToDefaults()
         searchInput:SetText("")
     end
 
-    applySize()
-    applyPosition()
-    applyDefenseSize()
-    applyDefensePosition()
-    applyFrameLayers()
-    applyBlacklistBinding()
+    feature.applyAllLayout()
     sanitizeSettings()
     updateSpellState()
     refreshAllEditorViews()
@@ -2663,15 +2663,7 @@ local function createMainOptionsPanel(frame)
     simcCheck:SetScript("OnClick", function(self)
         db().simcAssist = self:GetChecked() and true or false
         updateSpellState()
-        if frame.simcStatus then
-            local key = getSimcSpecKey()
-            local has = key and ShinkiliSimcData and Logic.getSimcSpecTable(ShinkiliSimcData, key)
-            if has then
-                frame.simcStatus:SetText(string.format(L("SIMC_STATUS_OK"), key))
-            else
-                frame.simcStatus:SetText(L("SIMC_STATUS_MISSING"))
-            end
-        end
+        feature.refreshSimcStatus(frame)
     end)
     frame.simcAssistCheck = simcCheck
 
@@ -2949,21 +2941,10 @@ local function createMainOptionsPanel(frame)
     local strataDropdown = CreateFrame("Frame", addonName .. "MainStrataDropdown", placementColumn, "UIDropDownMenuTemplate")
     strataDropdown:SetPoint("TOPLEFT", layerLabel, "BOTTOMLEFT", -16, -4)
     UIDropDownMenu_SetWidth(strataDropdown, 160)
-    UIDropDownMenu_Initialize(strataDropdown, function(_, level)
-        local info = UIDropDownMenu_CreateInfo()
-        for _, strata in ipairs(FRAME_STRATA_LIST) do
-            info.text = strata
-            info.value = strata
-            info.func = function()
-                db().frameStrata = strata
-                UIDropDownMenu_SetSelectedValue(strataDropdown, strata)
-                UIDropDownMenu_SetText(strataDropdown, strata)
-                applyFrameLayers()
-                feature.persistMappings()
-            end
-            info.checked = (db().frameStrata or defaults.frameStrata) == strata
-            UIDropDownMenu_AddButton(info, level)
-        end
+    feature.initStrataDropdown(strataDropdown, function()
+        return db().frameStrata or defaults.frameStrata
+    end, function(strata)
+        db().frameStrata = strata
     end)
     UIDropDownMenu_SetSelectedValue(strataDropdown, db().frameStrata or defaults.frameStrata)
     UIDropDownMenu_SetText(strataDropdown, db().frameStrata or defaults.frameStrata)
@@ -3017,6 +2998,87 @@ local function upsertPriorityEntry(listKey, spellId, colorIndex)
         enabled = true,
     })
     sanitizeSettings({skipBind = true})
+end
+
+-- Controls shared across option tabs (Main, Defense, Procs, Exclusions). They are
+-- `feature` fields rather than top-level locals because this file is one chunk
+-- and Lua caps a chunk at 200 locals (see AGENTS.md).
+
+--- Unfiltered, name-sorted spell picker. `stateKey` names the `state` field that
+--- holds the editor's current selection.
+function feature.initSpellPickerDropdown(dropdown, stateKey)
+    UIDropDownMenu_Initialize(dropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
+            info.text = spellInfo.name
+            info.value = spellInfo.spellId
+            info.func = function()
+                state[stateKey] = spellInfo.spellId
+                UIDropDownMenu_SetSelectedValue(dropdown, spellInfo.spellId)
+                UIDropDownMenu_SetText(dropdown, spellInfo.name)
+            end
+            info.checked = state[stateKey] == spellInfo.spellId
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+end
+
+--- Colour picker for a priority-list entry (index 1 is Unassigned, so start at 2).
+function feature.initEntryColorDropdown(dropdown, stateKey)
+    UIDropDownMenu_Initialize(dropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for index = 2, #COLOR_PALETTE do
+            info.text = feature.colorMenuText(index)
+            info.value = index
+            info.func = function()
+                state[stateKey] = index
+                UIDropDownMenu_SetSelectedValue(dropdown, index)
+                UIDropDownMenu_SetText(dropdown, getColorName(index))
+            end
+            info.checked = state[stateKey] == index
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+end
+
+--- Frame-strata picker for the Main and Defense placement columns.
+function feature.initStrataDropdown(dropdown, getStrata, setStrata)
+    UIDropDownMenu_Initialize(dropdown, function(_, level)
+        local info = UIDropDownMenu_CreateInfo()
+        for _, strata in ipairs(FRAME_STRATA_LIST) do
+            info.text = strata
+            info.value = strata
+            info.func = function()
+                setStrata(strata)
+                UIDropDownMenu_SetSelectedValue(dropdown, strata)
+                UIDropDownMenu_SetText(dropdown, strata)
+                applyFrameLayers()
+                feature.persistMappings()
+            end
+            info.checked = getStrata() == strata
+            UIDropDownMenu_AddButton(info, level)
+        end
+    end)
+end
+
+--- One row of the Exclusions tab's two flat lists. Unlike a priority row it has
+--- no colour or reordering: an exclusion is on or off.
+function feature.createExcludeRow(parent, width)
+    local row = CreateFrame("Frame", nil, parent)
+    row:SetSize(width, C.PRIORITY_ROW_HEIGHT)
+    row.enable = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
+    row.enable:SetPoint("LEFT", 0, 0)
+    row.enable:SetSize(24, 24)
+    row.spellText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    row.spellText:SetPoint("LEFT", row.enable, "RIGHT", 8, 0)
+    row.spellText:SetWidth(420)
+    row.spellText:SetJustifyH("LEFT")
+    row.deleteButton = CreateFrame("Button", nil, row, "GameMenuButtonTemplate")
+    row.deleteButton:SetSize(70, 20)
+    row.deleteButton:SetPoint("RIGHT", 0, 0)
+    row.deleteButton:SetText(L("DELETE"))
+    row:Hide()
+    return row
 end
 
 local function createPriorityRow(parent, _)
@@ -3238,21 +3300,10 @@ local function createDefenseOptionsPanel(frame)
     local strataDropdown = CreateFrame("Frame", addonName .. "DefenseStrataDropdown", frame, "UIDropDownMenuTemplate")
     strataDropdown:SetPoint("TOPLEFT", layerLabel, "BOTTOMLEFT", -16, -4)
     UIDropDownMenu_SetWidth(strataDropdown, 160)
-    UIDropDownMenu_Initialize(strataDropdown, function(_, level)
-        local info = UIDropDownMenu_CreateInfo()
-        for _, strata in ipairs(FRAME_STRATA_LIST) do
-            info.text = strata
-            info.value = strata
-            info.func = function()
-                db().defense.frameStrata = strata
-                UIDropDownMenu_SetSelectedValue(strataDropdown, strata)
-                UIDropDownMenu_SetText(strataDropdown, strata)
-                applyFrameLayers()
-                feature.persistMappings()
-            end
-            info.checked = ((db().defense and db().defense.frameStrata) or defaults.defense.frameStrata) == strata
-            UIDropDownMenu_AddButton(info, level)
-        end
+    feature.initStrataDropdown(strataDropdown, function()
+        return (db().defense and db().defense.frameStrata) or defaults.defense.frameStrata
+    end, function(strata)
+        db().defense.frameStrata = strata
     end)
     local defenseStrata = (db().defense and db().defense.frameStrata) or defaults.defense.frameStrata
     UIDropDownMenu_SetSelectedValue(strataDropdown, defenseStrata)
@@ -3294,39 +3345,13 @@ local function createDefenseOptionsPanel(frame)
     spellDropdown:SetPoint("LEFT", 0, -2)
     UIDropDownMenu_SetWidth(spellDropdown, 300)
     UIDropDownMenu_JustifyText(spellDropdown, "LEFT")
-    UIDropDownMenu_Initialize(spellDropdown, function(_, level)
-        local info = UIDropDownMenu_CreateInfo()
-        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
-            info.text = spellInfo.name
-            info.value = spellInfo.spellId
-            info.func = function()
-                state.defenseEditorSpellId = spellInfo.spellId
-                UIDropDownMenu_SetSelectedValue(spellDropdown, spellInfo.spellId)
-                UIDropDownMenu_SetText(spellDropdown, spellInfo.name)
-            end
-            info.checked = state.defenseEditorSpellId == spellInfo.spellId
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    feature.initSpellPickerDropdown(spellDropdown, "defenseEditorSpellId")
     frame.defenseSpellDropdown = spellDropdown
 
     local colorDropdown = CreateFrame("Frame", addonName .. "DefenseColorDropdown", editorRow, "UIDropDownMenuTemplate")
     colorDropdown:SetPoint("LEFT", spellDropdown, "RIGHT", -4, 0)
     UIDropDownMenu_SetWidth(colorDropdown, 140)
-    UIDropDownMenu_Initialize(colorDropdown, function(_, level)
-        local info = UIDropDownMenu_CreateInfo()
-        for index = 2, #COLOR_PALETTE do
-            info.text = feature.colorMenuText(index)
-            info.value = index
-            info.func = function()
-                state.defenseEditorColorIndex = index
-                UIDropDownMenu_SetSelectedValue(colorDropdown, index)
-                UIDropDownMenu_SetText(colorDropdown, getColorName(index))
-            end
-            info.checked = state.defenseEditorColorIndex == index
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    feature.initEntryColorDropdown(colorDropdown, "defenseEditorColorIndex")
     UIDropDownMenu_SetSelectedValue(colorDropdown, state.defenseEditorColorIndex or 2)
     UIDropDownMenu_SetText(colorDropdown, getColorName(state.defenseEditorColorIndex or 2))
 
@@ -3437,20 +3462,7 @@ local function createBlacklistOptionsPanel(frame)
     local spellDropdown = CreateFrame("Frame", addonName .. "BlacklistSpellDropdown", editorRow, "UIDropDownMenuTemplate")
     spellDropdown:SetPoint("LEFT", 0, -2)
     UIDropDownMenu_SetWidth(spellDropdown, 280)
-    UIDropDownMenu_Initialize(spellDropdown, function(_, level)
-        local info = UIDropDownMenu_CreateInfo()
-        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
-            info.text = spellInfo.name
-            info.value = spellInfo.spellId
-            info.func = function()
-                state.blacklistEditorSpellId = spellInfo.spellId
-                UIDropDownMenu_SetSelectedValue(spellDropdown, spellInfo.spellId)
-                UIDropDownMenu_SetText(spellDropdown, spellInfo.name)
-            end
-            info.checked = state.blacklistEditorSpellId == spellInfo.spellId
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    feature.initSpellPickerDropdown(spellDropdown, "blacklistEditorSpellId")
 
     local addButton = CreateFrame("Button", nil, editorRow, "GameMenuButtonTemplate")
     addButton:SetSize(80, 22)
@@ -3497,25 +3509,12 @@ local function createBlacklistOptionsPanel(frame)
     end)
 
     for rowIndex = 1, BL_SECTION_ROWS do
-        local row = CreateFrame("Frame", nil, frame)
-        row:SetSize(contentWidth - 24, C.PRIORITY_ROW_HEIGHT)
+        local row = feature.createExcludeRow(frame, contentWidth - 24)
         if rowIndex == 1 then
             row:SetPoint("TOPLEFT", blacklistScrollFrame, "TOPLEFT", 0, 0)
         else
             row:SetPoint("TOPLEFT", blacklistRows[rowIndex - 1], "BOTTOMLEFT", 0, 0)
         end
-        row.enable = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-        row.enable:SetPoint("LEFT", 0, 0)
-        row.enable:SetSize(24, 24)
-        row.spellText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        row.spellText:SetPoint("LEFT", row.enable, "RIGHT", 8, 0)
-        row.spellText:SetWidth(420)
-        row.spellText:SetJustifyH("LEFT")
-        row.deleteButton = CreateFrame("Button", nil, row, "GameMenuButtonTemplate")
-        row.deleteButton:SetSize(70, 20)
-        row.deleteButton:SetPoint("RIGHT", 0, 0)
-        row.deleteButton:SetText(L("DELETE"))
-        row:Hide()
         blacklistRows[rowIndex] = row
     end
 
@@ -3609,20 +3608,7 @@ local function createBlacklistOptionsPanel(frame)
     local cdSpellDropdown = CreateFrame("Frame", addonName .. "CooldownExcludeSpellDropdown", cdEditorRow, "UIDropDownMenuTemplate")
     cdSpellDropdown:SetPoint("LEFT", 0, -2)
     UIDropDownMenu_SetWidth(cdSpellDropdown, 280)
-    UIDropDownMenu_Initialize(cdSpellDropdown, function(_, level)
-        local info = UIDropDownMenu_CreateInfo()
-        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
-            info.text = spellInfo.name
-            info.value = spellInfo.spellId
-            info.func = function()
-                state.cooldownEditorSpellId = spellInfo.spellId
-                UIDropDownMenu_SetSelectedValue(cdSpellDropdown, spellInfo.spellId)
-                UIDropDownMenu_SetText(cdSpellDropdown, spellInfo.name)
-            end
-            info.checked = state.cooldownEditorSpellId == spellInfo.spellId
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    feature.initSpellPickerDropdown(cdSpellDropdown, "cooldownEditorSpellId")
 
     local cdAddButton = CreateFrame("Button", nil, cdEditorRow, "GameMenuButtonTemplate")
     cdAddButton:SetSize(80, 22)
@@ -3665,25 +3651,12 @@ local function createBlacklistOptionsPanel(frame)
     end)
 
     for rowIndex = 1, BL_SECTION_ROWS do
-        local row = CreateFrame("Frame", nil, frame)
-        row:SetSize(contentWidth - 24, C.PRIORITY_ROW_HEIGHT)
+        local row = feature.createExcludeRow(frame, contentWidth - 24)
         if rowIndex == 1 then
             row:SetPoint("TOPLEFT", cooldownExcludeScrollFrame, "TOPLEFT", 0, 0)
         else
             row:SetPoint("TOPLEFT", cooldownExcludeRows[rowIndex - 1], "BOTTOMLEFT", 0, 0)
         end
-        row.enable = CreateFrame("CheckButton", nil, row, "UICheckButtonTemplate")
-        row.enable:SetPoint("LEFT", 0, 0)
-        row.enable:SetSize(24, 24)
-        row.spellText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-        row.spellText:SetPoint("LEFT", row.enable, "RIGHT", 8, 0)
-        row.spellText:SetWidth(420)
-        row.spellText:SetJustifyH("LEFT")
-        row.deleteButton = CreateFrame("Button", nil, row, "GameMenuButtonTemplate")
-        row.deleteButton:SetSize(70, 20)
-        row.deleteButton:SetPoint("RIGHT", 0, 0)
-        row.deleteButton:SetText(L("DELETE"))
-        row:Hide()
         cooldownExcludeRows[rowIndex] = row
     end
 
@@ -3809,38 +3782,12 @@ local function createProcOptionsPanel(frame)
     local spellDropdown = CreateFrame("Frame", addonName .. "ProcSpellDropdown", editorRow, "UIDropDownMenuTemplate")
     spellDropdown:SetPoint("LEFT", 0, -2)
     UIDropDownMenu_SetWidth(spellDropdown, 300)
-    UIDropDownMenu_Initialize(spellDropdown, function(_, level)
-        local info = UIDropDownMenu_CreateInfo()
-        for _, spellInfo in ipairs(getFilteredAvailableSpells("", true)) do
-            info.text = spellInfo.name
-            info.value = spellInfo.spellId
-            info.func = function()
-                state.procEditorSpellId = spellInfo.spellId
-                UIDropDownMenu_SetSelectedValue(spellDropdown, spellInfo.spellId)
-                UIDropDownMenu_SetText(spellDropdown, spellInfo.name)
-            end
-            info.checked = state.procEditorSpellId == spellInfo.spellId
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    feature.initSpellPickerDropdown(spellDropdown, "procEditorSpellId")
 
     local colorDropdown = CreateFrame("Frame", addonName .. "ProcColorDropdown", editorRow, "UIDropDownMenuTemplate")
     colorDropdown:SetPoint("LEFT", spellDropdown, "RIGHT", -4, 0)
     UIDropDownMenu_SetWidth(colorDropdown, 140)
-    UIDropDownMenu_Initialize(colorDropdown, function(_, level)
-        local info = UIDropDownMenu_CreateInfo()
-        for index = 2, #COLOR_PALETTE do
-            info.text = feature.colorMenuText(index)
-            info.value = index
-            info.func = function()
-                state.procEditorColorIndex = index
-                UIDropDownMenu_SetSelectedValue(colorDropdown, index)
-                UIDropDownMenu_SetText(colorDropdown, getColorName(index))
-            end
-            info.checked = state.procEditorColorIndex == index
-            UIDropDownMenu_AddButton(info, level)
-        end
-    end)
+    feature.initEntryColorDropdown(colorDropdown, "procEditorColorIndex")
     UIDropDownMenu_SetSelectedValue(colorDropdown, state.procEditorColorIndex or 2)
     UIDropDownMenu_SetText(colorDropdown, getColorName(state.procEditorColorIndex or 2))
 
@@ -4884,25 +4831,10 @@ local function initialize()
     if type(ShinkiliDB.mappings) ~= "table" then
         ShinkiliDB.mappings = {}
     end
-    ShinkiliDB.defense = type(ShinkiliDB.defense) == "table" and ShinkiliDB.defense or {
-        enabled = defaults.defense.enabled,
-        locked = defaults.defense.locked,
-        size = defaults.defense.size,
-        point = defaults.defense.point,
-        relativePoint = defaults.defense.relativePoint,
-        x = defaults.defense.x,
-        y = defaults.defense.y,
-        frameStrata = defaults.defense.frameStrata,
-        frameLevel = defaults.defense.frameLevel,
-        entries = {},
-    }
-    ShinkiliDB.procs = type(ShinkiliDB.procs) == "table" and ShinkiliDB.procs or {entries = {}}
-    ShinkiliDB.blacklist = type(ShinkiliDB.blacklist) == "table" and ShinkiliDB.blacklist or {
-        enabled = false,
-        toggleKey = nil,
-        entries = {},
-        cooldowns = {},
-    }
+    ShinkiliDB.defense = type(ShinkiliDB.defense) == "table" and ShinkiliDB.defense or Logic.deepCopy(defaults.defense)
+    ShinkiliDB.procs = type(ShinkiliDB.procs) == "table" and ShinkiliDB.procs or Logic.deepCopy(defaults.procs)
+    ShinkiliDB.blacklist = type(ShinkiliDB.blacklist) == "table" and ShinkiliDB.blacklist
+        or Logic.deepCopy(defaults.blacklist)
     ShinkiliDB.charProfiles = type(ShinkiliDB.charProfiles) == "table" and ShinkiliDB.charProfiles or {}
     if ShinkiliDB.simcAssist == nil then
         ShinkiliDB.simcAssist = defaults.simcAssist
@@ -4914,12 +4846,7 @@ local function initialize()
 
     refreshAvailableSpells()
     sanitizeSettings()
-    applySize()
-    applyPosition()
-    applyDefenseSize()
-    applyDefensePosition()
-    applyFrameLayers()
-    applyBlacklistBinding()
+    feature.applyAllLayout()
     syncPlacementControls()
     updateSpellState()
     refreshMinimapButton()
@@ -5019,12 +4946,7 @@ addon:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
     if event == "PLAYER_LOGIN" then
         -- Character name/realm is reliable here; re-bind per-character/spec profiles.
         sanitizeSettings()
-        applySize()
-        applyPosition()
-        applyDefenseSize()
-        applyDefensePosition()
-        applyFrameLayers()
-        applyBlacklistBinding()
+        feature.applyAllLayout()
         if state.optionsOpen then
             refreshAllEditorViews()
         end
@@ -5041,12 +4963,7 @@ addon:SetScript("OnEvent", function(_, event, arg1, arg2, arg3)
         if arg1 == nil or arg1 == "player" then
             feature.persistMappings()
             sanitizeSettings()
-            applySize()
-            applyPosition()
-            applyDefenseSize()
-            applyDefensePosition()
-            applyFrameLayers()
-            applyBlacklistBinding()
+            feature.applyAllLayout()
             refreshAvailableSpells()
             scanTrackedSpells()
             if state.optionsOpen then

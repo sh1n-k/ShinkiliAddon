@@ -144,16 +144,13 @@ local accountOrphanBlocked = {
 }
 check("rehome skips non-empty target", Logic.rehomeNameOnlyCharMappings(accountOrphanBlocked, "Shindra-아즈샤라") == false)
 
-local ensured = Logic.ensureCharMappings({charMappings = {}}, "A-B")
-check("ensure creates empty mapping list", type(ensured) == "table" and #ensured == 0)
-
 -- Two-pass bind: migrate once, then live pointer must survive a second migrate.
 local cycle = {
     mappings = {{spellId = 10, colorIndex = 2}},
     charMappings = {},
 }
 Logic.migrateLegacyCharMappings(cycle, "Hero-Realm", nil)
-cycle.mappings = Logic.ensureCharMappings(cycle, "Hero-Realm")
+cycle.mappings = cycle.charMappings["Hero-Realm"]
 check("cycle after first migrate has one", #cycle.mappings == 1)
 cycle.mappings = {{spellId = 10, colorIndex = 2, markerIndex = 1}}
 cycle.charMappings["Hero-Realm"] = cycle.mappings
@@ -279,6 +276,30 @@ check("exclude ignores disabled cooldown entry", Logic.isSpellExcluded(bl, cds, 
 check("permanent blacklist hits even if cooldown filter off", Logic.isSpellExcluded(bl, cds, 7, false) == true)
 check("cooldown list ignored when filter off", Logic.isSpellExcluded({}, cds, 6673, false) == false)
 check("cooldown list active when filter on", Logic.isSpellExcluded({}, cds, 6673, true) == true)
+
+-- Legacy DBs predate the permanent/cooldown split: back then `entries` WAS the
+-- cooldown list and the master switch controlled it. Adopting it as-is would
+-- irreversibly make spells the user had switched off permanently excluded.
+local legacyBl = {
+    size = 64,
+    mappings = {},
+    overrides = {},
+    blacklist = {
+        enabled = false,
+        entries = {{spellId = 6673, enabled = true}},
+    },
+}
+Logic.sanitizeSettings(legacyBl, baseConfig())
+check("legacy blacklist list moves to cooldowns", #legacyBl.blacklist.cooldowns == 1
+    and legacyBl.blacklist.cooldowns[1].spellId == 6673)
+check("legacy move empties the permanent list", #legacyBl.blacklist.entries == 0)
+-- The move is keyed on `cooldowns == nil`, so a second pass must not swallow
+-- entries the user has since added to the permanent list.
+legacyBl.blacklist.entries = {{spellId = 1160, enabled = true}}
+Logic.sanitizeSettings(legacyBl, baseConfig())
+check("second sanitize keeps the permanent list", #legacyBl.blacklist.entries == 1
+    and legacyBl.blacklist.entries[1].spellId == 1160)
+check("second sanitize keeps the cooldown list", #legacyBl.blacklist.cooldowns == 1)
 --------------------------------------------------------------------------------
 -- pickRecommendation
 --
@@ -569,7 +590,7 @@ local deepDst = Logic.deepCopy(deepSrc)
 deepDst.a.b = 9
 check("deepCopy independence", deepSrc.a.b == 1 and deepDst.a.b == 9)
 
-local account = {
+local profileAccount = {
     size = 40,
     x = 1,
     y = 2,
@@ -605,38 +626,38 @@ local account = {
     },
 }
 
-Logic.migrateCharSpecProfiles(account, "Hero-Realm")
-check("migrate sets schema version 3", account.profileSchemaVersion == 3)
-check("migrate creates char profile", type(account.charProfiles["Hero-Realm"]) == "table")
+Logic.migrateCharSpecProfiles(profileAccount, "Hero-Realm")
+check("migrate sets schema version 3", profileAccount.profileSchemaVersion == 3)
+check("migrate creates char profile", type(profileAccount.charProfiles["Hero-Realm"]) == "table")
 check("migrate seed has mapping from charMappings",
-    account.charProfiles["Hero-Realm"].seed.mappings[1]
-        and account.charProfiles["Hero-Realm"].seed.mappings[1].spellId == 50)
+    profileAccount.charProfiles["Hero-Realm"].seed.mappings[1]
+        and profileAccount.charProfiles["Hero-Realm"].seed.mappings[1].spellId == 50)
 check("migrate seed has account proc for current char",
-    account.charProfiles["Hero-Realm"].seed.procs.entries[1]
-        and account.charProfiles["Hero-Realm"].seed.procs.entries[1].spellId == 100)
+    profileAccount.charProfiles["Hero-Realm"].seed.procs.entries[1]
+        and profileAccount.charProfiles["Hero-Realm"].seed.procs.entries[1].spellId == 100)
 check("migrate seed has cooldown exclude for current char",
-    account.charProfiles["Hero-Realm"].seed.blacklist.cooldowns[1]
-        and account.charProfiles["Hero-Realm"].seed.blacklist.cooldowns[1].spellId == 6673)
+    profileAccount.charProfiles["Hero-Realm"].seed.blacklist.cooldowns[1]
+        and profileAccount.charProfiles["Hero-Realm"].seed.blacklist.cooldowns[1].spellId == 6673)
 check("migrate placement keeps toggle key",
-    account.charProfiles["Hero-Realm"].placement.blacklistToggleKey == "F9")
+    profileAccount.charProfiles["Hero-Realm"].placement.blacklistToggleKey == "F9")
 
 -- Other character must not inherit current account defense/proc lists.
-account.charMappings["Other-Realm"] = {{spellId = 1, colorIndex = 2, markerIndex = 1}}
-account.profileSchemaVersion = 2
-account.charProfiles["Other-Realm"] = {
-    placement = Logic.deepCopy(account.charProfiles["Hero-Realm"].placement),
-    seed = Logic.deepCopy(account.charProfiles["Hero-Realm"].seed),
+profileAccount.charMappings["Other-Realm"] = {{spellId = 1, colorIndex = 2, markerIndex = 1}}
+profileAccount.profileSchemaVersion = 2
+profileAccount.charProfiles["Other-Realm"] = {
+    placement = Logic.deepCopy(profileAccount.charProfiles["Hero-Realm"].placement),
+    seed = Logic.deepCopy(profileAccount.charProfiles["Hero-Realm"].seed),
     specs = {},
 }
-Logic.migrateCharSpecProfiles(account, "Hero-Realm")
+Logic.migrateCharSpecProfiles(profileAccount, "Hero-Realm")
 check("v3 strips shared lists from other characters",
-    #(account.charProfiles["Other-Realm"].seed.defense.entries or {}) == 0
-        and #(account.charProfiles["Other-Realm"].seed.procs.entries or {}) == 0)
+    #(profileAccount.charProfiles["Other-Realm"].seed.defense.entries or {}) == 0
+        and #(profileAccount.charProfiles["Other-Realm"].seed.procs.entries or {}) == 0)
 check("v3 keeps other character mappings",
-    account.charProfiles["Other-Realm"].seed.mappings[1]
-        and account.charProfiles["Other-Realm"].seed.mappings[1].spellId == 50)
+    profileAccount.charProfiles["Other-Realm"].seed.mappings[1]
+        and profileAccount.charProfiles["Other-Realm"].seed.mappings[1].spellId == 50)
 
-local prof = Logic.ensureCharProfile(account, "Hero-Realm")
+local prof = Logic.ensureCharProfile(profileAccount, "Hero-Realm")
 local arms = Logic.ensureSpecProfile(prof, "WARRIOR_1")
 local fury = Logic.ensureSpecProfile(prof, "WARRIOR_2")
 check("first visit clones seed mappings", arms.mappings[1] and arms.mappings[1].spellId == 50)
@@ -658,9 +679,58 @@ check("apply placement size from char profile", live.size == 40)
 check("apply diverged mapping from arms", live.mappings[1] and live.mappings[1].spellId == 999)
 check("arms keeps seed simcAssist", arms.simcAssist ~= false)
 
-local before = account.charProfiles["Hero-Realm"].seed.mappings[1].spellId
-Logic.migrateCharSpecProfiles(account, "Hero-Realm")
-check("migrate is idempotent", account.charProfiles["Hero-Realm"].seed.mappings[1].spellId == before)
+local before = profileAccount.charProfiles["Hero-Realm"].seed.mappings[1].spellId
+Logic.migrateCharSpecProfiles(profileAccount, "Hero-Realm")
+check("migrate is idempotent", profileAccount.charProfiles["Hero-Realm"].seed.mappings[1].spellId == before)
+
+-- The save half of the bind/persist cycle. Every per-spec list has to survive a
+-- capture -> apply round trip, and the captured bucket must not alias the live
+-- settings: the stored profile would otherwise mutate with every UI edit.
+local captureSource = {
+    mappings = {{spellId = 11, colorIndex = 2, markerIndex = 1}},
+    procs = {entries = {{spellId = 22, colorIndex = 3, enabled = true}}},
+    defense = {enabled = false, entries = {{spellId = 33, colorIndex = 4, enabled = true}}},
+    blacklist = {
+        enabled = true,
+        entries = {{spellId = 44, enabled = true}},
+        cooldowns = {{spellId = 55, enabled = false}},
+    },
+    simcAssist = false,
+}
+local captured = Logic.captureSpecFromSettings(captureSource)
+check("capture keeps every list", #captured.mappings == 1 and #captured.procs.entries == 1
+    and #captured.defense.entries == 1 and #captured.blacklist.entries == 1
+    and #captured.blacklist.cooldowns == 1)
+check("capture keeps the disabled flags",
+    captured.defense.enabled == false and captured.blacklist.enabled == true
+        and captured.simcAssist == false)
+captureSource.mappings[1].spellId = 999
+captureSource.defense.entries[1].spellId = 999
+check("capture is independent of the live settings",
+    captured.mappings[1].spellId == 11 and captured.defense.entries[1].spellId == 33)
+
+local roundTrip = Logic.applySpecToSettings({}, captured)
+check("capture round-trips through apply",
+    roundTrip.mappings[1].spellId == 11
+        and roundTrip.procs.entries[1].spellId == 22
+        and roundTrip.defense.entries[1].spellId == 33
+        and roundTrip.defense.enabled == false
+        and roundTrip.blacklist.cooldowns[1].spellId == 55
+        and roundTrip.simcAssist == false)
+
+check("capture of an empty settings root is the empty profile", (function()
+    local empty = Logic.captureSpecFromSettings(nil)
+    return #empty.mappings == 0 and #empty.procs.entries == 0
+        and empty.defense.enabled == true and empty.simcAssist == true
+end)())
+
+-- The exclusion keybind lives on the character placement, so a profile without
+-- one has to CLEAR the live key rather than leave the previous character's.
+local keyed = {blacklist = {toggleKey = "F9"}}
+Logic.applyCharPlacementToSettings(keyed, {})
+check("placement without a toggle key clears it", keyed.blacklist.toggleKey == nil)
+Logic.applyCharPlacementToSettings(keyed, {blacklistToggleKey = "SHIFT-F1"})
+check("placement toggle key is applied", keyed.blacklist.toggleKey == "SHIFT-F1")
 
 --------------------------------------------------------------------------------
 -- Locale parity: a reason or command string that exists in one language and not

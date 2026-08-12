@@ -204,8 +204,6 @@ local function mappingListHasEntries(mappings)
     return false
 end
 
-Logic.mappingListHasEntries = mappingListHasEntries
-
 local function isCharMappingBucket(accountDb, list)
     if type(accountDb) ~= "table" or type(list) ~= "table" then
         return false
@@ -289,18 +287,6 @@ function Logic.rehomeNameOnlyCharMappings(accountDb, characterKey)
     accountDb.charMappings[characterKey] = orphan
     accountDb.charMappings[nameOnly] = nil
     return true
-end
-
---- Ensure charMappings[characterKey] is a mapping array; returns that array.
-function Logic.ensureCharMappings(accountDb, characterKey)
-    if type(accountDb) ~= "table" or type(characterKey) ~= "string" or characterKey == "" then
-        return {}
-    end
-    accountDb.charMappings = type(accountDb.charMappings) == "table" and accountDb.charMappings or {}
-    if type(accountDb.charMappings[characterKey]) ~= "table" then
-        accountDb.charMappings[characterKey] = {}
-    end
-    return accountDb.charMappings[characterKey]
 end
 
 --------------------------------------------------------------------------------

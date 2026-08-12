@@ -351,10 +351,6 @@ ShinkiliTrack.isChargeSpell = function()
 end
 C_Spell.GetSpellCharges = savedChargeApi
 
-ShinkiliTrack.getChargesRemaining = function()
-    return nil
-end
-
 -- "Cannot cast, reason unreadable" must not become a hard block: that would
 -- filter a merely resource-starved spell out of the pool entirely.
 freshPass()
@@ -383,6 +379,13 @@ check("ready defensive shows", Eval.isUsableForDisplay(100) == true)
 check("on-cooldown defensive hides", Eval.isUsableForDisplay(103) == false)
 check("unaffordable defensive hides", Eval.isUsableForDisplay(102) == false)
 check("unreadable defensive still shows", Eval.isUsableForDisplay(106) == true)
+
+-- The main box is deliberately looser than the defense box on affordability:
+-- resources refill every GCD, so filtering on them would blink the colour at
+-- 20Hz. The two policies must not drift into agreement.
+check("main box keeps a resource-starved spell", Eval.isPickable(102) == true)
+check("main box drops an on-cooldown spell", Eval.isPickable(103) == false)
+check("main box keeps an unreadable spell", Eval.isPickable(106) == true)
 
 --------------------------------------------------------------------------------
 -- Nameplate counting under secret values
@@ -446,7 +449,9 @@ check("dot gate with no id anywhere is unknown, not an error", (function()
     local ok, verdict = pcall(Eval.evaluateEntry, {gates = {{t = "dot", neg = true}}})
     return ok and verdict == "unknown"
 end)())
-check("gateless entry with no id is unknown, not an error", (function()
+-- No id at all: the self-redundancy veto has nothing to look up, so the
+-- unconditional line stays promotable instead of throwing on a nil memo key.
+check("gateless entry with no id passes, not errors", (function()
     local ok, verdict = pcall(Eval.evaluateEntry, {})
     return ok and verdict == "pass"
 end)())

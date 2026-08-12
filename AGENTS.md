@@ -30,6 +30,7 @@
 - **Per character** (`charProfiles[Name-Realm].placement`): main/defense box size/position/lock/layer, blacklist toggle key.
 - **Per character+spec** (`charProfiles[…].specs[CLASS_N]`): `mappings`, `procs.entries`, `defense.entries` (+ enabled), `blacklist.entries` / `cooldowns` / cooldown-filter `enabled`, `simcAssist`.
 - Migration: v2 creates `charProfiles`; v3 stops sharing account-wide defense/proc/blacklist seeds across other characters. Spec lists lazy-clone from that character’s `seed`. Defense/proc rows are **not** pruned on bind (that used to persist into profiles and delete talent-swapped rows); unlearned entries stay listed and simply fail castability.
+- The pre-`charProfiles` `charMappings[Name-Realm]` bucket is still written (`feature.syncCharMappings`) and is **not** dead: `Logic.migrateLegacyCharMappings` uses that pointer identity to tell a live per-character list apart from a pre-migration account-wide one it must move.
 
 ## Runtime model
 - **Main box (best single pick)** — `Logic.pickRecommendation`, four stages:
@@ -37,7 +38,7 @@
   1b. **Ownership**: a spell the player has not actually learned (talent choice nodes leave the unpicked active id unlearned while `IsSpellUsable` still reports it ready) is `unusable`. `IsPlayerSpell` and `IsSpellKnownOrOverridesKnown` are both consulted; neither answering means unknown, not "unlearned".
   2. **Hard filter**: drop anything the game *confirms* cannot be cast (`unusable` / `out_of_range` / `on_cd`). `no_resource` is transient and never removes a spell.
   3. **SimC override**: first SimC entry that is in the pool, has **every** gate proven `pass`, and reads `ready`. Reason `simc_verified`.
-     - A gateless non-delegated entry is an unconditional APL line and stays promotable, but is vetoed by **self-redundancy** when its own buff is *confirmed* active or its own DoT *confirmed* live. Unreadable reads do not veto, so in combat with auras secret this rarely fires; the DoT half only ever applies to entries a `dot` gate also references (1 of 187 today).
+     - A gateless non-delegated entry is an unconditional APL line and stays promotable, but is vetoed by **self-redundancy** when its own buff is *confirmed* active or its own DoT *confirmed* live. Unreadable reads do not veto, so in combat with auras secret this rarely fires; the DoT half only ever applies to entries a `dot` gate also references (3 of 187 today).
      - A gate whose data cannot express the condition reads `unknown`: `cd` without a reference id (SimC's cooldown conditions name *other* spells), `dot` without polarity (`x.ticking` and `!x.ticking` flatten identically), `execute` without an operator (most upstream lines are `>N`, i.e. *not* execute range). Guessing any of these inverts half the cases.
   4. **Fallback**: AC primary → lookahead → first survivor. If the filter empties the pool, AC primary is still shown rather than blanking.
 - **Core invariant**: an unreadable input is `unknown`, and unknown never wins. SimC may only outrank Blizzard on a fully proven entry, so the pick is never worse than plain AC.
@@ -99,7 +100,8 @@ Prefer in order:
 If a step is skipped, report why and the exact command.
 
 ## WoW Lua Guardrails
-- **`Shinkili.lua` is one chunk and Lua caps a chunk at 200 locals.** luacheck reports a file over the cap as clean while the game refuses to load the addon. `tests/test_load.lua` guards this — when it trips, move a cohesive block into a module (that is why `ShinkiliEval.lua` exists), do not shave individual locals.
+- **`Shinkili.lua` is one chunk and Lua caps a chunk at 200 locals.** luacheck reports a file over the cap as clean while the game refuses to load the addon. `tests/test_load.lua` guards this (it also fails below 4 free slots, so the cap is never reached silently) — when it trips, move a cohesive block into a module (that is why `ShinkiliEval.lua` exists), do not shave individual locals.
+- **Shared helpers go on the `feature` table, not into a new top-level `local`.** That is the whole point of `feature`: `applyAllLayout`, `syncCharMappings`, `refreshSimcStatus`, `initSpellPickerDropdown`, `initEntryColorDropdown`, `initStrataDropdown` and `createExcludeRow` are all reused across tabs and cost no local slot. They are looked up at call time, so definition order inside the chunk does not matter.
 - Split large options UI into helper builders; avoid one monolithic options function.
 - Nested callbacks that close over many locals can break WoW Lua — extract helpers before adding more controls.
 - Reuse reset/refresh/lifecycle handlers instead of duplicating long callbacks.

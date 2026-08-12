@@ -171,8 +171,6 @@ local function durationObjectActive(durationObject)
     return Secret.plainBool(shown)
 end
 
-Secret.durationObjectActive = durationObjectActive
-
 --- Is the probe usable at all on this client? Diagnostics only.
 function Secret.isProbeAvailable()
     return getScratchCooldown() ~= nil

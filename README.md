@@ -4,7 +4,7 @@ WoW retail addon: turns Blizzard Assisted Combat recommendations into configurab
 
 ## Features
 - Map recommended spells to colors (main box)
-- Settings are stored **per character and per spec** (`Name-Realm` → spec): spell colour mappings, defense, procs and the exclusion lists all live there, as do the main/defense box placement and the exclusion keybind. Only cast-state **overrides**, language and the minimap button are account-wide
+- Settings are stored **per character and per spec** (`Name-Realm` → spec): spell colour mappings, defense, procs, the exclusion lists and the SimC toggle all live there; the main/defense box placement and the exclusion keybind are per character. Only cast-state **overrides**, the interrupt-signal toggle, language and the minimap button are account-wide
 - **Reset Defaults** restores the account-wide items and wipes the current character's profile **for every spec**; other characters are untouched
 - **Map current** / `/sk map` assigns the current Assisted Combat / SimC **pick** (not a proc override color) to the next free color
 - Yellow `ShinkiliInterruptIndicator` above the main box uses real **Show/Hide** when the target cast is known-interruptible (KeySim); hidden when shielded or when the flag is secret. Spell label rises above the signal only while it is shown

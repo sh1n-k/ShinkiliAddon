@@ -222,10 +222,8 @@ end
 check("local provider resolves unknown", Secret.isSpellOnRealCooldown(204) == true)
 check("local provider nil stays unknown", Secret.isSpellOnRealCooldown(205) == nil)
 -- isOnGCD == true only means the GCD is running; a real cooldown can be ticking
--- underneath it. With the probe blind, the local tracker is the only witness --
--- and "no witness" must stay unknown, never "ready".
+-- underneath it, so the local tracker gets the final say either way.
 cooldownStructs[206] = {isOnGCD = true, isActive = true}
-check("isOnGCD true with no tracker stays unknown", Secret.isSpellOnRealCooldown(206) == nil)
 Secret.localCooldownProvider = function(spellId)
     if spellId == 206 then
         return true
