@@ -658,13 +658,6 @@ check("apply placement size from char profile", live.size == 40)
 check("apply diverged mapping from arms", live.mappings[1] and live.mappings[1].spellId == 999)
 check("arms keeps seed simcAssist", arms.simcAssist ~= false)
 
-local known = {[100] = true, [200] = true}
-local pruned = Logic.filterPriorityEntriesKnown({
-    {spellId = 100, colorIndex = 2},
-    {spellId = 9999, colorIndex = 3},
-}, function(id) return known[id] == true end)
-check("filterPriorityEntriesKnown drops unknown", #pruned == 1 and pruned[1].spellId == 100)
-
 local before = account.charProfiles["Hero-Realm"].seed.mappings[1].spellId
 Logic.migrateCharSpecProfiles(account, "Hero-Realm")
 check("migrate is idempotent", account.charProfiles["Hero-Realm"].seed.mappings[1].spellId == before)

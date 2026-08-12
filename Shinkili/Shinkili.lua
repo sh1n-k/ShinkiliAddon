@@ -2675,6 +2675,17 @@ local function createMainOptionsPanel(frame)
     end)
     frame.simcAssistCheck = simcCheck
 
+    -- Same row as SimC: avoids growing the bottom placement column (footer clash)
+    -- and does not push the mapping list / overrides band downward.
+    local interruptCheck = CreateFrame("CheckButton", addonName .. "InterruptEnable", frame, "UICheckButtonTemplate")
+    interruptCheck:SetPoint("LEFT", simcCheck, "LEFT", math.floor(contentWidth * 0.55), 0)
+    interruptCheck.text:SetText(L("INTERRUPT_ENABLE"))
+    interruptCheck:SetScript("OnClick", function(self)
+        db().interruptEnabled = self:GetChecked() and true or false
+        feature.refreshInterrupt()
+    end)
+    frame.interruptEnable = interruptCheck
+
     local simcStatus = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     simcStatus:SetPoint("TOPLEFT", simcCheck, "BOTTOMLEFT", 28, -2)
     simcStatus:SetWidth(contentWidth - 28)
@@ -2683,10 +2694,17 @@ local function createMainOptionsPanel(frame)
 
     local simcHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     simcHint:SetPoint("TOPLEFT", simcStatus, "BOTTOMLEFT", 0, -2)
-    simcHint:SetWidth(contentWidth - 28)
+    simcHint:SetWidth(math.floor(contentWidth * 0.52))
     simcHint:SetJustifyH("LEFT")
     simcHint:SetText(L("SIMC_ASSIST_HINT"))
     frame.simcHint = simcHint
+
+    local interruptHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    interruptHint:SetPoint("TOPLEFT", interruptCheck, "BOTTOMLEFT", 28, -2)
+    interruptHint:SetWidth(math.floor(contentWidth * 0.42))
+    interruptHint:SetJustifyH("LEFT")
+    interruptHint:SetText(L("INTERRUPT_HINT"))
+    frame.interruptHint = interruptHint
 
     local editorLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     editorLabel:SetPoint("TOPLEFT", simcHint, "BOTTOMLEFT", -28, -8)
@@ -2849,7 +2867,7 @@ local function createMainOptionsPanel(frame)
     frame.empowerOverrideRow = empowerOverrideRow
 
     local placementColumn = CreateFrame("Frame", nil, frame)
-    placementColumn:SetSize(placementColumnWidth, 220)
+    placementColumn:SetSize(placementColumnWidth, 190)
     placementColumn:SetPoint("TOPLEFT", overridesColumn, "TOPRIGHT", 16, 0)
 
     local placementLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -2966,28 +2984,13 @@ local function createMainOptionsPanel(frame)
             frame.mainLevelInput:SetText(tostring(db().frameLevel))
         end
     end)
-    levelHolder:SetPoint("TOPLEFT", strataDropdown, "BOTTOMLEFT", 16, -4)
+    -- Beside strata (not under it) so the column stays within the bottom band.
+    levelHolder:SetPoint("LEFT", strataDropdown, "RIGHT", 4, 2)
     frame.mainLevelInput = levelHolder.input
     frame.mainLevelHolder = levelHolder
     if frame.mainLevelInput then
         frame.mainLevelInput:SetText(tostring(db().frameLevel or defaults.frameLevel))
     end
-
-    local interruptCheck = CreateFrame("CheckButton", addonName .. "InterruptEnable", placementColumn, "UICheckButtonTemplate")
-    interruptCheck:SetPoint("TOPLEFT", levelHolder, "BOTTOMLEFT", -4, -10)
-    interruptCheck.text:SetText(L("INTERRUPT_ENABLE"))
-    interruptCheck:SetScript("OnClick", function(self)
-        db().interruptEnabled = self:GetChecked() and true or false
-        feature.refreshInterrupt()
-    end)
-    frame.interruptEnable = interruptCheck
-
-    local interruptHint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    interruptHint:SetPoint("TOPLEFT", interruptCheck, "BOTTOMLEFT", 4, -2)
-    interruptHint:SetWidth(placementColumnWidth - 8)
-    interruptHint:SetJustifyH("LEFT")
-    interruptHint:SetText(L("INTERRUPT_HINT"))
-    frame.interruptHint = interruptHint
 end
 
 local function upsertPriorityEntry(listKey, spellId, colorIndex)

@@ -526,28 +526,6 @@ local function stripSharedListsFromSeed(seed, keepMappings)
     }
 end
 
---- Drop priority entries the player cannot cast (wrong-class leftovers after migrate).
-function Logic.filterPriorityEntriesKnown(entries, isKnownFn)
-    if type(entries) ~= "table" then
-        return {}
-    end
-    if type(isKnownFn) ~= "function" then
-        return entries
-    end
-    local out = {}
-    for index = 1, #entries do
-        local entry = entries[index]
-        local spellId = type(entry) == "table" and tonumber(entry.spellId) or nil
-        if spellId and spellId > 0 then
-            local ok, known = pcall(isKnownFn, spellId)
-            if ok and known == true then
-                out[#out + 1] = entry
-            end
-        end
-    end
-    return out
-end
-
 --- One-time migration to charProfiles. Existing data seeds every future spec
 --- of the *current* character; other characters keep mappings only (no shared
 --- account-wide defense/proc/blacklist lists).
