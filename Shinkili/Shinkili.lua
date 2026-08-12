@@ -1079,13 +1079,16 @@ local function collectAcPositionInputs()
             local clean = {}
             for i = 1, #rot do
                 local id = rot[i]
-                if type(id) ~= "number" or id <= 0 then
-                    clean = nil
-                    break
+                -- Skip only the bad entry. Dropping the whole list over one of
+                -- them shrinks the pool to primary+lookahead, which silently
+                -- disables the SimC override instead of degrading it.
+                -- Appending (not clean[i]) is load-bearing: a hole would stop
+                -- every ipairs walk over this list at the gap.
+                if type(id) == "number" and id > 0 then
+                    clean[#clean + 1] = id
                 end
-                clean[i] = id
             end
-            rotation = clean
+            rotation = #clean > 0 and clean or nil
         end
     end
 
@@ -1278,8 +1281,15 @@ getSpellCooldownInfo = function(spellId)
     if GetSpellCooldown then
         local ok, startTime, duration, enabled, modRate = pcall(GetSpellCooldown, spellId)
         if ok then
-            return Secret.plainNumber(startTime), Secret.plainNumber(duration),
-                Secret.plainBool(enabled), Secret.plainNumber(modRate)
+            startTime = Secret.plainNumber(startTime)
+            duration = Secret.plainNumber(duration)
+            -- `ok` alone is not an answer: the legacy API exists but can hand back
+            -- secrets, and returning here on unreadable values made the C_Spell
+            -- fallback below unreachable. Only a readable pair settles it.
+            if startTime and duration then
+                return startTime, duration,
+                    Secret.plainBool(enabled), Secret.plainNumber(modRate)
+            end
         end
     end
 
