@@ -4463,7 +4463,11 @@ local function printWhyReport()
         frame:SetFrameLevel(1000)
         frame:SetMovable(true)
         frame:EnableMouse(true)
-        frame:EnableKeyboard(true)
+        -- Deliberately NOT keyboard-enabled: a keyboard-enabled frame with no
+        -- OnKeyDown swallows keys instead of passing them to the binding system
+        -- (see bindingCaptureFrame, where that swallow is the point). Both close
+        -- paths work without it -- UISpecialFrames handles Esc globally and the
+        -- EditBox takes its own focus for OnEscapePressed.
         frame:SetClampedToScreen(true)
         frame:RegisterForDrag("LeftButton")
         frame:SetScript("OnDragStart", frame.StartMoving)
@@ -4537,15 +4541,23 @@ local function printWhyReport()
         export.close:SetText(L("CLOSE"))
         export.edit:SetText(body)
 
-        local lineCount = 1
-        for _ in body:gmatch("\n") do
-            lineCount = lineCount + 1
-        end
         local scrollWidth = export.scroll:GetWidth()
         if scrollWidth and scrollWidth > 0 then
             export.edit:SetWidth(scrollWidth)
         end
-        export.edit:SetHeight(math.max(320, lineCount * 14 + 16))
+
+        -- Height has to cover *wrapped* rows, not just newlines: a gate-heavy
+        -- SimC row runs past the edit width and folds, and a scroll child that
+        -- is too short leaves the tail unreachable. Byte length over-counts
+        -- multi-byte spell names, and the width estimate is deliberately
+        -- pessimistic -- slack only adds blank space, it never hides a row.
+        local usable = math.max(120, (export.edit:GetWidth() or 500) - 8)
+        local perLine = math.max(20, math.floor(usable / 6))
+        local rows = 0
+        for line in (body .. "\n"):gmatch("([^\n]*)\n") do
+            rows = rows + math.max(1, math.ceil(#line / perLine))
+        end
+        export.edit:SetHeight(math.max(320, rows * 14 + 16))
         export.scroll:SetVerticalScroll(0)
 
         export.frame:Show()
