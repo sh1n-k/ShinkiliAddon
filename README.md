@@ -9,7 +9,7 @@ WoW retail addon: turns Blizzard Assisted Combat recommendations into configurab
 - **Map current** / `/sk map` assigns the current Assisted Combat / SimC **pick** (not a proc override color) to the next free color
 - Yellow `ShinkiliInterruptIndicator` above the main box uses real **Show/Hide** when the target cast is known-interruptible (KeySim); hidden when shielded or when the flag is secret. Spell label rises above the signal only while it is shown
 - **SimC-verified pick**: reads what WoW 12.0 still exposes (secret-safe cooldown/buff probes, secondary resources, range, action-bar usability, locally reconstructed cooldowns/charges/DoTs) and lets the SimC priority override Blizzard's Assisted Combat pick only when every condition **that survived into the bundled data** is proven and the spell is castable right now — otherwise it defers to AC, so the signal is never worse than plain Assist. See `AGENTS.md` for what the upstream flattener drops.
-- `/sk why` explains the current pick: reason, secret-probe health, tracker state, the candidate pool with castability, and per-gate verdicts
+- `/sk why` explains the current pick: reason, secret-probe health, tracker state, the candidate pool with castability, and per-gate verdicts — opens a copyable text window (chat stays truncated)
 - Defense tab: separate priority color box for usable defensive skills
 - Procs tab: active spell overlays override the main box
 - **Exclusions** tab, two lists: a permanent blacklist that always applies, and a cooldown list gated by the master switch (`/sk blacklist on|off`, keybind toggle, centre toast). Upgrading from an older build moves the old single list into the cooldown list, so nothing becomes permanently excluded behind your back

@@ -4488,114 +4488,242 @@ end
 --
 -- Without this the pick is unauditable: nothing else shows which SimC condition
 -- was readable, which one vetoed a promotion, or whether the secret-value probe
--- still works after a patch.
+-- still works after a patch. Chat stays truncated; the export EditBox gets the
+-- full plain-text dump for agent paste.
 --------------------------------------------------------------------------------
 
-local WHY_MAX_ROWS = 12
+local WHY_CHAT_MAX_ROWS = 12
 
 local function whyPrint(text)
     print("|cff33ff99Shinkili|r " .. text)
 end
 
 local function printWhyReport()
-    Eval.beginPass()
-
-    local secrets = Secret.getDiagnostics()
-    local function printSecretHealth()
-        whyPrint(string.format("  secrets: probe=%s issecretvalue=%s auras=%s cooldowns=%s",
-            secrets.probeAvailable and "ok" or "UNAVAILABLE",
-            secrets.hasIsSecretValue and "yes" or "no",
-            secrets.aurasSecret and "secret" or "plain",
-            secrets.cooldownsSecret and "secret" or "plain"))
-    end
-
-    if not isAssistedCombatAvailable() then
-        whyPrint(L("WHY_REPORT_HEADER"))
-        whyPrint("  ac: unavailable - no recommendation is produced")
-        -- Probe health is the reason this command exists; report it even when
-        -- there is no pick to explain.
-        printSecretHealth()
-        return
-    end
-
-    local simcAssist = db().simcAssist ~= false
-    local primary, lookahead, rotation = collectAcPositionInputs()
-    local simcEntries, specKey, context = getSimcContextForPick(simcAssist)
-    local blacklist = getBlacklistSettings()
-
-    local spellId, reason, detail = Logic.pickRecommendation(primary, lookahead, rotation, simcEntries, {
-        blacklistEntries = blacklist.entries,
-        blacklistCooldowns = blacklist.cooldowns,
-        blacklistEnabled = blacklist.enabled == true,
-        simcAssist = simcAssist,
-        displayOf = Eval.getDisplaySpellId,
-        castability = Eval.getCastability,
-        gateVerdict = Eval.evaluateEntry,
-        collectDetail = true,
-    })
-
-    whyPrint(L("WHY_REPORT_HEADER"))
-    if spellId then
-        whyPrint(string.format("  pick: %s (%d) - %s", getSpellNameSafe(spellId), spellId, tostring(reason)))
-    else
-        whyPrint("  pick: none - " .. tostring(reason))
-    end
-
-    printSecretHealth()
-
-    if ShinkiliTrack then
-        local track = ShinkiliTrack.getDiagnostics()
-        whyPrint(string.format("  track: scanned=%d cooldowns=%d charges=%d dots=%d pending=%d",
-            track.scannedSpells, track.activeCooldowns, track.chargeSpells,
-            track.trackedDots, track.pendingDotCasts))
-    end
-
-    whyPrint(string.format("  ac: primary=%s lookahead=%s rotation=%d",
-        primary and tostring(primary) or "-",
-        lookahead and tostring(lookahead) or "-",
-        rotation and #rotation or 0))
-
-    whyPrint(string.format("  pool=%d castable=%d%s",
-        detail.poolSize or 0,
-        detail.castableSize or 0,
-        detail.hardFilterEmpty and "  (all blocked - showing AC anyway)" or ""))
-    for index, row in ipairs(detail.pool) do
-        if index > WHY_MAX_ROWS then
-            whyPrint(string.format("    ... %d more", #detail.pool - WHY_MAX_ROWS))
-            break
+    -- Nested helpers keep the main chunk under Lua's 200-local cap.
+    local function ensureWhyExportFrame()
+        local export = feature.whyExport
+        if export then
+            return export
         end
-        whyPrint(string.format("    %s (%d) %s", getSpellNameSafe(row.id), row.id, row.castability))
+
+        export = {}
+        feature.whyExport = export
+
+        local frame = CreateFrame("Frame", "ShinkiliWhyExport", UIParent, "BackdropTemplate")
+        frame:SetSize(560, 420)
+        frame:SetPoint("CENTER")
+        frame:SetFrameStrata("FULLSCREEN_DIALOG")
+        frame:SetFrameLevel(1000)
+        frame:SetMovable(true)
+        frame:EnableMouse(true)
+        frame:EnableKeyboard(true)
+        frame:SetClampedToScreen(true)
+        frame:RegisterForDrag("LeftButton")
+        frame:SetScript("OnDragStart", frame.StartMoving)
+        frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+        frame:SetBackdrop({
+            bgFile = "Interface/Buttons/WHITE8X8",
+            edgeFile = "Interface/Buttons/WHITE8X8",
+            edgeSize = 1,
+        })
+        frame:SetBackdropColor(0.06, 0.06, 0.06, 0.96)
+        frame:SetBackdropBorderColor(0.20, 1.00, 0.60, 0.85)
+        frame:Hide()
+        frame:SetScript("OnHide", function()
+            if export.edit then
+                export.edit:ClearFocus()
+            end
+        end)
+
+        local title = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        title:SetPoint("TOPLEFT", 16, -14)
+        title:SetTextColor(0.20, 1.00, 0.60, 1)
+
+        local hint = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        hint:SetPoint("TOPRIGHT", -16, -18)
+        hint:SetTextColor(0.75, 0.75, 0.75, 1)
+
+        local scroll = CreateFrame("ScrollFrame", "ShinkiliWhyExportScroll", frame, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 16, -42)
+        scroll:SetPoint("BOTTOMRIGHT", -36, 48)
+
+        local edit = CreateFrame("EditBox", "ShinkiliWhyExportEdit", scroll)
+        edit:SetMultiLine(true)
+        edit:SetAutoFocus(false)
+        edit:SetFontObject(_G.GameFontHighlightSmall)
+        edit:SetTextInsets(4, 4, 4, 4)
+        edit:SetWidth(500)
+        edit:SetScript("OnEscapePressed", function()
+            frame:Hide()
+        end)
+        edit:SetScript("OnEditFocusGained", function(self)
+            self:HighlightText()
+        end)
+        scroll:SetScrollChild(edit)
+
+        local close = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+        close:SetSize(110, 24)
+        close:SetPoint("BOTTOM", 0, 12)
+        close:SetScript("OnClick", function()
+            frame:Hide()
+        end)
+
+        local special = _G.UISpecialFrames
+        if special then
+            special[#special + 1] = "ShinkiliWhyExport"
+        end
+
+        export.frame = frame
+        export.edit = edit
+        export.scroll = scroll
+        export.title = title
+        export.hint = hint
+        export.close = close
+        return export
     end
 
-    if not simcAssist then
-        whyPrint("  simc: off")
-        return
-    end
-    if not simcEntries or #simcEntries == 0 then
-        whyPrint(string.format("  simc: no data for %s", specKey or "?"))
-        return
+    local function showWhyExport(text)
+        local export = ensureWhyExportFrame()
+        local body = text or ""
+        export.title:SetText(L("WHY_REPORT_HEADER"))
+        export.hint:SetText(L("WHY_EXPORT_HINT"))
+        export.close:SetText(L("CLOSE"))
+        export.edit:SetText(body)
+
+        local lineCount = 1
+        for _ in body:gmatch("\n") do
+            lineCount = lineCount + 1
+        end
+        local scrollWidth = export.scroll:GetWidth()
+        if scrollWidth and scrollWidth > 0 then
+            export.edit:SetWidth(scrollWidth)
+        end
+        export.edit:SetHeight(math.max(320, lineCount * 14 + 16))
+        export.scroll:SetVerticalScroll(0)
+
+        export.frame:Show()
+        export.edit:SetFocus()
+        export.edit:HighlightText()
     end
 
-    whyPrint(string.format("  simc: %s/%s, %d entries", specKey or "?", context or "?", #simcEntries))
-    for index, entry in ipairs(simcEntries) do
-        if index > WHY_MAX_ROWS then
-            whyPrint(string.format("    ... %d more", #simcEntries - WHY_MAX_ROWS))
-            break
+    local function buildWhyReport()
+        local chatLines = {}
+        local exportLines = {}
+
+        local function addBoth(text)
+            chatLines[#chatLines + 1] = text
+            exportLines[#exportLines + 1] = text
         end
-        local entryId = type(entry) == "table" and entry.id or entry
-        local displayId = Eval.getDisplaySpellId(entryId)
-        local marks = {}
-        for _, gate in ipairs(Eval.describeEntry(entry)) do
-            marks[#marks + 1] = gate.kind .. "=" .. gate.verdict
+
+        local function addListed(index, total, line)
+            exportLines[#exportLines + 1] = line
+            if index <= WHY_CHAT_MAX_ROWS then
+                chatLines[#chatLines + 1] = line
+            elseif index == WHY_CHAT_MAX_ROWS + 1 then
+                chatLines[#chatLines + 1] = string.format("    ... %d more", total - WHY_CHAT_MAX_ROWS)
+            end
         end
-        whyPrint(string.format("    %s (%s) gates=%s cast=%s%s%s",
-            getSpellNameSafe(displayId),
-            tostring(displayId),
-            Eval.evaluateEntry(entry),
-            Eval.getCastability(displayId),
-            #marks > 0 and ("  [" .. table.concat(marks, " ") .. "]") or "",
-            (spellId == displayId) and "  <== pick" or ""))
+
+        Eval.beginPass()
+
+        local secrets = Secret.getDiagnostics()
+        local function addSecretHealth()
+            addBoth(string.format("  secrets: probe=%s issecretvalue=%s auras=%s cooldowns=%s",
+                secrets.probeAvailable and "ok" or "UNAVAILABLE",
+                secrets.hasIsSecretValue and "yes" or "no",
+                secrets.aurasSecret and "secret" or "plain",
+                secrets.cooldownsSecret and "secret" or "plain"))
+        end
+
+        if not isAssistedCombatAvailable() then
+            addBoth(L("WHY_REPORT_HEADER"))
+            addBoth("  ac: unavailable - no recommendation is produced")
+            -- Probe health is the reason this command exists; report it even when
+            -- there is no pick to explain.
+            addSecretHealth()
+            return chatLines, exportLines
+        end
+
+        local simcAssist = db().simcAssist ~= false
+        local primary, lookahead, rotation = collectAcPositionInputs()
+        local simcEntries, specKey, context = getSimcContextForPick(simcAssist)
+        local blacklist = getBlacklistSettings()
+
+        local spellId, reason, detail = Logic.pickRecommendation(primary, lookahead, rotation, simcEntries, {
+            blacklistEntries = blacklist.entries,
+            blacklistCooldowns = blacklist.cooldowns,
+            blacklistEnabled = blacklist.enabled == true,
+            simcAssist = simcAssist,
+            displayOf = Eval.getDisplaySpellId,
+            castability = Eval.getCastability,
+            gateVerdict = Eval.evaluateEntry,
+            collectDetail = true,
+        })
+
+        addBoth(L("WHY_REPORT_HEADER"))
+        if spellId then
+            addBoth(string.format("  pick: %s (%d) - %s", getSpellNameSafe(spellId), spellId, tostring(reason)))
+        else
+            addBoth("  pick: none - " .. tostring(reason))
+        end
+
+        addSecretHealth()
+
+        if ShinkiliTrack then
+            local track = ShinkiliTrack.getDiagnostics()
+            addBoth(string.format("  track: scanned=%d cooldowns=%d charges=%d dots=%d pending=%d",
+                track.scannedSpells, track.activeCooldowns, track.chargeSpells,
+                track.trackedDots, track.pendingDotCasts))
+        end
+
+        addBoth(string.format("  ac: primary=%s lookahead=%s rotation=%d",
+            primary and tostring(primary) or "-",
+            lookahead and tostring(lookahead) or "-",
+            rotation and #rotation or 0))
+
+        addBoth(string.format("  pool=%d castable=%d%s",
+            detail.poolSize or 0,
+            detail.castableSize or 0,
+            detail.hardFilterEmpty and "  (all blocked - showing AC anyway)" or ""))
+        for index, row in ipairs(detail.pool) do
+            addListed(index, #detail.pool,
+                string.format("    %s (%d) %s", getSpellNameSafe(row.id), row.id, row.castability))
+        end
+
+        if not simcAssist then
+            addBoth("  simc: off")
+            return chatLines, exportLines
+        end
+        if not simcEntries or #simcEntries == 0 then
+            addBoth(string.format("  simc: no data for %s", specKey or "?"))
+            return chatLines, exportLines
+        end
+
+        addBoth(string.format("  simc: %s/%s, %d entries", specKey or "?", context or "?", #simcEntries))
+        for index, entry in ipairs(simcEntries) do
+            local entryId = type(entry) == "table" and entry.id or entry
+            local displayId = Eval.getDisplaySpellId(entryId)
+            local marks = {}
+            for _, gate in ipairs(Eval.describeEntry(entry)) do
+                marks[#marks + 1] = gate.kind .. "=" .. gate.verdict
+            end
+            addListed(index, #simcEntries, string.format("    %s (%s) gates=%s cast=%s%s%s",
+                getSpellNameSafe(displayId),
+                tostring(displayId),
+                Eval.evaluateEntry(entry),
+                Eval.getCastability(displayId),
+                #marks > 0 and ("  [" .. table.concat(marks, " ") .. "]") or "",
+                (spellId == displayId) and "  <== pick" or ""))
+        end
+
+        return chatLines, exportLines
     end
+
+    local chatLines, exportLines = buildWhyReport()
+    for _, line in ipairs(chatLines) do
+        whyPrint(line)
+    end
+    showWhyExport(table.concat(exportLines, "\n"))
 end
 
 SLASH_SHINKILI1 = "/shinkili"
