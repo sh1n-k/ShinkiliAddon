@@ -1023,7 +1023,7 @@ getSimcSpecKey = function()
     if not classFile then
         return nil
     end
-    local specIndex = GetSpecialization and GetSpecialization() or nil
+    local specIndex = GetSpecialization and Secret.plainNumber(GetSpecialization()) or nil
     if not specIndex or specIndex < 1 then
         return nil
     end
@@ -1283,6 +1283,9 @@ end
 
 --- opts.skipBind: keep live root lists (after an in-UI edit) instead of reloading
 --- from charProfiles, which would wipe unsaved inserts.
+--- opts.skipPersist: sanitize live values without writing them back (options
+--- OnShow). SetChecked can fire OnClick; persisting that would store the
+--- widget's old state over a live true.
 --- Named `opts`, not `options`: that name is the options-window frame at module
 --- scope, and shadowing it here would be silent.
 local function sanitizeSettings(opts)
@@ -1291,7 +1294,9 @@ local function sanitizeSettings(opts)
         feature.bindMappings()
     end
     Logic.sanitizeSettings(db(), sanitizeConfig())
-    feature.persistMappings()
+    if opts.skipPersist ~= true then
+        feature.persistMappings()
+    end
 end
 
 local function applyPosition()
@@ -2436,7 +2441,9 @@ local function refreshAllEditorViews()
             UIDropDownMenu_SetText(main.mainStrataDropdown, strata)
         end
         if main.simcAssistCheck then
+            main.simcAssistCheck._shinkiliSilent = true
             main.simcAssistCheck:SetChecked(db().simcAssist ~= false)
+            main.simcAssistCheck._shinkiliSilent = nil
         end
         if main.interruptEnable then
             main.interruptEnable:SetChecked(db().interruptEnabled ~= false)
@@ -2644,7 +2651,17 @@ local function createMainOptionsPanel(frame)
     simcCheck:SetPoint("TOPLEFT", currentSpellText, "BOTTOMLEFT", 0, -4)
     simcCheck.text:SetText(L("SIMC_ASSIST"))
     simcCheck:SetScript("OnClick", function(self)
-        db().simcAssist = self:GetChecked() and true or false
+        if self._shinkiliSilent then
+            return
+        end
+        local checked = Secret.plainBool(self:GetChecked())
+        if checked == nil then
+            return
+        end
+        db().simcAssist = checked
+        -- Per-spec: without persist, bindMappings (options OnShow / spec change)
+        -- reloads spec.simcAssist and the uncheck is lost.
+        feature.persistMappings()
         updateSpellState()
         feature.refreshSimcStatus(frame)
     end)
@@ -3966,6 +3983,12 @@ refreshOptionsLocale = function()
         if main.sizeHolder and main.sizeHolder.label then main.sizeHolder.label:SetText(L("SIZE")) end
         if main.xHolder and main.xHolder.label then main.xHolder.label:SetText(L("X")) end
         if main.yHolder and main.yHolder.label then main.yHolder.label:SetText(L("Y")) end
+        if main.simcAssistCheck and main.simcAssistCheck.text then
+            main.simcAssistCheck.text:SetText(L("SIMC_ASSIST"))
+            main.simcAssistCheck._shinkiliSilent = true
+            main.simcAssistCheck:SetChecked(db().simcAssist ~= false)
+            main.simcAssistCheck._shinkiliSilent = nil
+        end
         if main.interruptEnable and main.interruptEnable.text then
             main.interruptEnable.text:SetText(L("INTERRUPT_ENABLE"))
             main.interruptEnable:SetChecked(db().interruptEnabled ~= false)
@@ -4139,12 +4162,15 @@ local function attachOptionsLifecycle(frame)
     frame:SetScript("OnShow", function()
         state.optionsOpen = true
         refreshAvailableSpells()
-        sanitizeSettings()
+        -- Do not rebind or persist: bind can apply the seed (simcAssist=true),
+        -- and SetChecked can fire OnClick which would persist the widget's
+        -- previous unchecked state over a live true.
+        sanitizeSettings({skipBind = true, skipPersist = true})
         syncEditorSelection()
         updateSpellState()
         refreshOptionsLocale()
-        refreshAllEditorViews()
         selectOptionsTab(state.optionsTab or "main")
+        refreshAllEditorViews()
         refreshVisibility()
     end)
 
