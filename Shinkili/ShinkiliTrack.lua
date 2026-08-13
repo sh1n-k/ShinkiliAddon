@@ -344,9 +344,10 @@ end
 --------------------------------------------------------------------------------
 -- Target DoTs
 --
--- Debuff identity is secret in combat, so a DoT is reconstructed from our own
--- casts plus the aura-instance bridge (auraInstanceID is NeverSecret and
--- IsAuraFilteredOutByInstanceID reports "harmful aura we cast" as a plain bool).
+-- 12.1 makes UNIT_AURA payloads and GetUnitAuras results secret in combat
+-- (length and ipairs error). The instance bridge and the "list length 0"
+-- absence proof therefore only run when auras are readable. Combat is left
+-- with the post-cast window, then unknown.
 --------------------------------------------------------------------------------
 
 local function dotEntry(spellId)
@@ -423,9 +424,28 @@ function Track.noteDotCast(spellId, alsoDisplayId)
     end
 end
 
+local function isReadableList(list)
+    if type(list) ~= "table" or Secret.isSecret(list) then
+        return false
+    end
+    -- A secret/forbidden table is not always issecretvalue(table); indexing
+    -- or # still errors. issecrettable is the collection probe.
+    if issecrettable then
+        local ok, secretTable = pcall(issecrettable, list)
+        if ok and secretTable == true then
+            return false
+        end
+    end
+    return true
+end
+
 --- UNIT_AURA on the target: bridge added debuffs to our casts, drop removed ones.
+--- 12.1: do not index or walk the payload while auras are secret.
 function Track.onTargetAuraUpdate(updateInfo)
-    if type(updateInfo) ~= "table" then
+    if Secret.areAurasSecret() then
+        return
+    end
+    if not isReadableList(updateInfo) then
         return
     end
 
@@ -437,7 +457,7 @@ function Track.onTargetAuraUpdate(updateInfo)
         return
     end
 
-    if type(updateInfo.removedAuraInstanceIDs) == "table" then
+    if isReadableList(updateInfo.removedAuraInstanceIDs) then
         for _, rawInstanceId in ipairs(updateInfo.removedAuraInstanceIDs) do
             -- Normalised the same way as the add path, or a type mismatch would
             -- make removal a silent no-op and pin the DoT to "live".
@@ -455,7 +475,7 @@ function Track.onTargetAuraUpdate(updateInfo)
         end
     end
 
-    if type(updateInfo.addedAuras) == "table" and #dotPendingCasts > 0 then
+    if isReadableList(updateInfo.addedAuras) and #dotPendingCasts > 0 then
         local current = now()
         for i = #dotPendingCasts, 1, -1 do
             if current - dotPendingCasts[i].time > DOT_BRIDGE_WINDOW then
@@ -485,23 +505,27 @@ function Track.onTargetAuraUpdate(updateInfo)
     end
 end
 
---- Number of harmful auras the player has on the target. The aura LIST and its
---- length stay plain in combat -- only the per-aura fields are secret -- so a
---- count of zero is a trustworthy "none of my DoTs are up".
+--- Number of harmful auras the player has on the target. 12.1 returns a secret
+--- vector in combat, so a readable zero is only trusted when auras are not
+--- secret. Unknown never becomes a confident absence.
 local function countOwnDebuffsOnTarget()
-    if not C_UnitAuras then
+    if Secret.areAurasSecret() then
         return nil
     end
-    if C_UnitAuras.GetUnitAuras then
-        local ok, list = pcall(C_UnitAuras.GetUnitAuras, "target", "HARMFUL|PLAYER")
-        if ok and type(list) == "table" then
-            return #list
-        end
+    if not (C_UnitAuras and C_UnitAuras.GetUnitAuras) then
+        return nil
     end
-    -- No GetAuraDataByIndex fallback on purpose: that accessor is
-    -- SecretWhenUnitAuraRestricted, so in combat it can stop early and report a
-    -- confident zero for a target that is covered in our DoTs.
-    return nil
+    local ok, list = pcall(C_UnitAuras.GetUnitAuras, "target", "HARMFUL|PLAYER")
+    if not ok or not isReadableList(list) then
+        return nil
+    end
+    local okLen, count = pcall(function()
+        return #list
+    end)
+    if not okLen then
+        return nil
+    end
+    return Secret.plainNumber(count)
 end
 
 --- true = the DoT is on the current target, false = confirmed absent,

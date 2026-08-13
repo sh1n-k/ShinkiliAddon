@@ -321,6 +321,68 @@ Track.resetDots()
 check("no plain aura list means dot unknown", Track.isDotActiveOnTarget(50) == nil)
 C_UnitAuras.GetUnitAuras = savedGetUnitAuras
 
+-- 12.1: secret vectors and UNIT_AURA payloads must not be measured or walked.
+Track.setDotWatchList({30})
+Track.resetDots()
+targetAuras = {}
+local savedAurasSecret = C_Secrets.ShouldAurasBeSecret
+C_Secrets.ShouldAurasBeSecret = function()
+    return true
+end
+check("secret aura list does not claim absence", Track.isDotActiveOnTarget(30) == nil)
+
+Track.noteDotCast(30)
+Track.onTargetAuraUpdate({
+    addedAuras = {{auraInstanceID = 5}},
+    removedAuraInstanceIDs = {5},
+    isFullUpdate = true,
+})
+check("secret UNIT_AURA payload is ignored", Track.isDotActiveOnTarget(30) == true)
+C_Secrets.ShouldAurasBeSecret = savedAurasSecret
+clock = clock + 31
+targetAuras = {{auraInstanceID = 901}}
+check("post-cast window still expires after ignored payload",
+    Track.isDotActiveOnTarget(30) == nil)
+
+Track.resetDots()
+targetAuras = {}
+local secretList = {}
+local savedIsSecret = issecretvalue
+issecretvalue = function(value)
+    return value == secretList
+end
+C_UnitAuras.GetUnitAuras = function()
+    return secretList
+end
+check("secret vector length is unknown", Track.isDotActiveOnTarget(30) == nil)
+C_UnitAuras.GetUnitAuras = savedGetUnitAuras
+
+Track.resetDots()
+Track.noteDotCast(30)
+local secretAdded = {{auraInstanceID = 5}}
+issecretvalue = function(value)
+    return value == secretAdded
+end
+Track.onTargetAuraUpdate({addedAuras = secretAdded})
+issecretvalue = savedIsSecret
+clock = clock + 31
+targetAuras = {{auraInstanceID = 901}}
+check("secret addedAuras vector does not confirm the bridge",
+    Track.isDotActiveOnTarget(30) == nil)
+
+Track.resetDots()
+targetAuras = {}
+local flaggedList = {}
+issecrettable = function(value)
+    return value == flaggedList
+end
+C_UnitAuras.GetUnitAuras = function()
+    return flaggedList
+end
+check("issecrettable vector length is unknown", Track.isDotActiveOnTarget(30) == nil)
+C_UnitAuras.GetUnitAuras = savedGetUnitAuras
+issecrettable = nil
+
 -- resyncCooldowns must drop entries the engine says are finished.
 Track.reset()
 baseCooldownMs[60] = 30000

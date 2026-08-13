@@ -35,6 +35,7 @@ read_globals = {
     "UIParent",
     -- 12.0 secret-value surface
     "issecretvalue",
+    "issecrettable",
     "C_Secrets",
     "C_UnitAuras",
     "C_LossOfControl",
