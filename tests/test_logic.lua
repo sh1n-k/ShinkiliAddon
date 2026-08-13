@@ -72,6 +72,9 @@ check("first free nil when full", Logic.getFirstFreeColorIndex({
     {colorIndex = 2}, {colorIndex = 3},
 }, nil, 3) == nil)
 check("suggested marker unused", Logic.getSuggestedMarkerIndex(mappings, nil, 8) == 3)
+check("suggested marker least-used when full", Logic.getSuggestedMarkerIndex({
+    {markerIndex = 1}, {markerIndex = 1}, {markerIndex = 2},
+}, nil, 2) == 2)
 
 check("interrupt show when kickable", Logic.shouldShowInterruptIndicator(true, false, true) == true)
 check("interrupt hide when shielded", Logic.shouldShowInterruptIndicator(true, true, true) == false)
@@ -220,6 +223,13 @@ check("priority disabled preserved", priority[3].enabled == false)
 check("pick skips disabled", Logic.pickPriorityEntry(priority, {[12] = true}) == nil)
 check("pick first active", Logic.pickPriorityEntry(priority, {[11] = true, [10] = true}).spellId == 10)
 check("pick empty set", Logic.pickPriorityEntry(priority, {}) == nil)
+check("pick predicate skips disabled", Logic.pickPriorityEntry(priority, function(id)
+    return id == 12
+end) == nil)
+check("pick predicate returns first match", Logic.pickPriorityEntry(priority, function(id)
+    return id == 11
+end).spellId == 11)
+check("pick rejects a non-set isActive", Logic.pickPriorityEntry(priority, "nope") == nil)
 check("move up", Logic.movePriorityEntry(priority, 2, -1) == true and priority[1].spellId == 11)
 check("move out of bounds", Logic.movePriorityEntry(priority, 1, -1) == false)
 check("move nil list", Logic.movePriorityEntry(nil, 1, 1) == false)
@@ -300,6 +310,12 @@ Logic.sanitizeSettings(legacyBl, baseConfig())
 check("second sanitize keeps the permanent list", #legacyBl.blacklist.entries == 1
     and legacyBl.blacklist.entries[1].spellId == 1160)
 check("second sanitize keeps the cooldown list", #legacyBl.blacklist.cooldowns == 1)
+legacyBl.blacklist.toggleKey = ""
+Logic.sanitizeSettings(legacyBl, baseConfig())
+check("empty toggle key is cleared", legacyBl.blacklist.toggleKey == nil)
+legacyBl.blacklist.toggleKey = "SHIFT-F1"
+Logic.sanitizeSettings(legacyBl, baseConfig())
+check("non-empty toggle key is kept", legacyBl.blacklist.toggleKey == "SHIFT-F1")
 --------------------------------------------------------------------------------
 -- pickRecommendation
 --

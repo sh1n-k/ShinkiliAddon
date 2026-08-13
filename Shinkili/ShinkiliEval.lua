@@ -317,10 +317,6 @@ local function chargeVerdict(spellId, displayId, maxCharges, recharging, current
     return nil, true
 end
 
-local function readChargeRow(spellId)
-    return Secret.getSpellChargeInfo(spellId)
-end
-
 local function computeCooldownBlocked(spellId)
     spellId = tonumber(spellId)
     if not spellId then
@@ -339,9 +335,9 @@ local function computeCooldownBlocked(spellId)
     -- Known zero from either source hard-filters (safe). Unknown stays open.
     local maxCharges, recharging, currentCharges
     if not skippedChargeRead then
-        maxCharges, recharging, currentCharges = readChargeRow(spellId)
+        maxCharges, recharging, currentCharges = Secret.getSpellChargeInfo(spellId)
         if (not maxCharges or maxCharges <= 1) and displayId then
-            local dMax, dRech, dCur = readChargeRow(displayId)
+            local dMax, dRech, dCur = Secret.getSpellChargeInfo(displayId)
             if dMax and dMax > 1 then
                 maxCharges, recharging, currentCharges = dMax, dRech, dCur
             end
@@ -372,10 +368,10 @@ local function computeCooldownBlocked(spellId)
     if blocked == true and skippedChargeRead then
         -- About to hard-filter on a "no charges" scan: re-check the API in case
         -- this is actually a multi-charge spell with a banked charge.
-        local m, r, c = readChargeRow(spellId)
+        local m, r, c = Secret.getSpellChargeInfo(spellId)
         local verdict, isChargeSpell = chargeVerdict(spellId, displayId, m, r, c)
         if not isChargeSpell and displayId then
-            m, r, c = readChargeRow(displayId)
+            m, r, c = Secret.getSpellChargeInfo(displayId)
             verdict, isChargeSpell = chargeVerdict(spellId, displayId, m, r, c)
         end
         if isChargeSpell then
@@ -682,6 +678,15 @@ local GATE_PASS = "pass"
 local GATE_FAIL = "fail"
 local GATE_UNKNOWN = "unknown"
 
+--- Delegates to the tracker; unknown when the tracker is absent or has not
+--- observed it.
+local function isDotActive(spellId)
+    if not (ShinkiliTrack and type(ShinkiliTrack.isDotActiveOnTarget) == "function") then
+        return nil
+    end
+    return ShinkiliTrack.isDotActiveOnTarget(spellId)
+end
+
 local function compareNumbers(value, op, threshold)
     if op == ">=" then
         return value >= threshold
@@ -769,7 +774,7 @@ local function evaluateSimcGate(gate, entryId)
             return GATE_UNKNOWN
         end
         local dotId = gate.id or entryId
-        local active = memoTriState(dotCache, dotId, Eval.isDotActive)
+        local active = memoTriState(dotCache, dotId, isDotActive)
         if active == nil then
             return GATE_UNKNOWN
         end
@@ -836,15 +841,6 @@ local function evaluateSimcGate(gate, entryId)
     return GATE_UNKNOWN
 end
 
---- Is this spell's DoT live on the current target? Delegates to the tracker;
---- unknown when the tracker is absent or has not observed it.
-function Eval.isDotActive(spellId)
-    if not (ShinkiliTrack and type(ShinkiliTrack.isDotActiveOnTarget) == "function") then
-        return nil
-    end
-    return ShinkiliTrack.isDotActiveOnTarget(spellId)
-end
-
 --- Per-gate breakdown for /sk why. Not on the hot path.
 function Eval.describeEntry(entry)
     local details = {}
@@ -880,7 +876,7 @@ function Eval.describeEntry(entry)
         }
         details[#details + 1] = {
             kind = "self-dot",
-            verdict = selfVerdict(memoTriState(dotCache, entryId, Eval.isDotActive)),
+            verdict = selfVerdict(memoTriState(dotCache, entryId, isDotActive)),
         }
     end
     return details
@@ -910,7 +906,7 @@ function Eval.evaluateEntry(entry)
         if memoTriState(buffCache, entryId, Secret.isBuffActive) == true then
             return GATE_FAIL
         end
-        if memoTriState(dotCache, entryId, Eval.isDotActive) == true then
+        if memoTriState(dotCache, entryId, isDotActive) == true then
             return GATE_FAIL
         end
         return GATE_PASS

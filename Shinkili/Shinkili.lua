@@ -397,14 +397,6 @@ local function db()
     return ShinkiliDB
 end
 
-local function clamp(value, minimum, maximum)
-    return Logic.clamp(value, minimum, maximum)
-end
-
-local function trim(text)
-    return Logic.trim(text)
-end
-
 function feature.characterKey()
     local name, realm = UnitFullName("player")
     if (not realm or realm == "") and GetNormalizedRealmName then
@@ -935,21 +927,6 @@ end
 
 local getSpellCooldownInfo
 
-local function pickActivePriorityEntry(entries, isActive)
-    if type(entries) ~= "table" then
-        return nil
-    end
-
-    local activeSet = {}
-    for _, entry in ipairs(entries) do
-        if entry.enabled ~= false and entry.spellId and isActive(entry.spellId) then
-            activeSet[entry.spellId] = true
-        end
-    end
-
-    return Logic.pickPriorityEntry(entries, activeSet)
-end
-
 --- A proc overlay means the game is highlighting the spell, but it can still be
 --- out of range or on cooldown. Filter those, but NOT `no_resource`: this is a
 --- main-box path and resource starvation refills every GCD, so excluding on it
@@ -974,7 +951,7 @@ local function isProcUsable(spellId)
 end
 
 local function getActiveProcEntry()
-    return pickActivePriorityEntry(db().procs and db().procs.entries, isProcUsable)
+    return Logic.pickPriorityEntry(db().procs and db().procs.entries, isProcUsable)
 end
 
 local function getActiveDefenseEntry()
@@ -982,7 +959,7 @@ local function getActiveDefenseEntry()
     if not defense or defense.enabled == false then
         return nil
     end
-    return pickActivePriorityEntry(defense.entries, Eval.isUsableForDisplay)
+    return Logic.pickPriorityEntry(defense.entries, Eval.isUsableForDisplay)
 end
 
 local function getDisplayedSpellId()
@@ -2431,10 +2408,6 @@ local function createOverrideControl(parent, labelText, stateKey, holderWidth, d
     return holder
 end
 
-local function parseInteger(text)
-    return Logic.parseInteger(text)
-end
-
 --- "SimC data for CLASS_N" / "no bundled data" line on the Main tab.
 function feature.refreshSimcStatus(frame)
     if not (frame and frame.simcStatus) then
@@ -2878,12 +2851,12 @@ local function createMainOptionsPanel(frame)
     frame.placementLabel = placementLabel
 
     local sizeHolder = createPlacementInput(placementColumn, L("SIZE"), 64, function(text)
-        local value = parseInteger(text)
+        local value = Logic.parseInteger(text)
         if not value then
             syncPlacementControls()
             return
         end
-        db().size = clamp(value, 24, 300)
+        db().size = Logic.clamp(value, 24, 300)
         applySize()
         syncPlacementControls()
         feature.persistMappings()
@@ -2894,12 +2867,12 @@ local function createMainOptionsPanel(frame)
     frame.sizeHolder = sizeHolder
 
     local xHolder = createPlacementInput(placementColumn, L("X"), 64, function(text)
-        local value = parseInteger(text)
+        local value = Logic.parseInteger(text)
         if not value then
             syncPlacementControls()
             return
         end
-        db().x = clamp(value, -1000, 1000)
+        db().x = Logic.clamp(value, -1000, 1000)
         applyPosition()
         syncPlacementControls()
         feature.persistMappings()
@@ -2909,12 +2882,12 @@ local function createMainOptionsPanel(frame)
     frame.xHolder = xHolder
 
     local yHolder = createPlacementInput(placementColumn, L("Y"), 64, function(text)
-        local value = parseInteger(text)
+        local value = Logic.parseInteger(text)
         if not value then
             syncPlacementControls()
             return
         end
-        db().y = clamp(value, -1000, 1000)
+        db().y = Logic.clamp(value, -1000, 1000)
         applyPosition()
         syncPlacementControls()
         feature.persistMappings()
@@ -2961,7 +2934,7 @@ local function createMainOptionsPanel(frame)
     frame.mainStrataDropdown = strataDropdown
 
     local levelHolder = createPlacementInput(placementColumn, L("FRAME_LEVEL"), 72, function(text)
-        local value = parseInteger(text)
+        local value = Logic.parseInteger(text)
         if not value then
             if frame.mainLevelInput then
                 frame.mainLevelInput:SetText(tostring(db().frameLevel or defaults.frameLevel))
@@ -3252,14 +3225,14 @@ local function createDefenseOptionsPanel(frame)
     frame.defensePlacementLabel = placementLabel
 
     local sizeHolder = createPlacementInput(frame, L("SIZE"), 64, function(text)
-        local value = parseInteger(text)
+        local value = Logic.parseInteger(text)
         if not value then
             if frame.defenseSizeInput then
                 frame.defenseSizeInput:SetText(tostring(db().defense.size or defaults.defense.size))
             end
             return
         end
-        db().defense.size = clamp(value, 24, 300)
+        db().defense.size = Logic.clamp(value, 24, 300)
         applyDefenseSize()
         feature.persistMappings()
         refreshDefenseBox()
@@ -3269,14 +3242,14 @@ local function createDefenseOptionsPanel(frame)
     frame.defenseSizeHolder = sizeHolder
 
     local xHolder = createPlacementInput(frame, L("X"), 64, function(text)
-        local value = parseInteger(text)
+        local value = Logic.parseInteger(text)
         if not value then
             if frame.defenseXInput then
                 frame.defenseXInput:SetText(tostring(db().defense.x or defaults.defense.x))
             end
             return
         end
-        db().defense.x = clamp(value, -1000, 1000)
+        db().defense.x = Logic.clamp(value, -1000, 1000)
         db().defense.point = "CENTER"
         db().defense.relativePoint = "CENTER"
         applyDefensePosition()
@@ -3288,14 +3261,14 @@ local function createDefenseOptionsPanel(frame)
     frame.defenseXHolder = xHolder
 
     local yHolder = createPlacementInput(frame, L("Y"), 64, function(text)
-        local value = parseInteger(text)
+        local value = Logic.parseInteger(text)
         if not value then
             if frame.defenseYInput then
                 frame.defenseYInput:SetText(tostring(db().defense.y or defaults.defense.y))
             end
             return
         end
-        db().defense.y = clamp(value, -1000, 1000)
+        db().defense.y = Logic.clamp(value, -1000, 1000)
         db().defense.point = "CENTER"
         db().defense.relativePoint = "CENTER"
         applyDefensePosition()
@@ -3325,7 +3298,7 @@ local function createDefenseOptionsPanel(frame)
     frame.defenseStrataDropdown = strataDropdown
 
     local dLevelHolder = createPlacementInput(frame, L("FRAME_LEVEL"), 72, function(text)
-        local value = parseInteger(text)
+        local value = Logic.parseInteger(text)
         if not value then
             if frame.defenseLevelInput then
                 frame.defenseLevelInput:SetText(tostring((db().defense and db().defense.frameLevel) or defaults.defense.frameLevel))
@@ -4722,7 +4695,7 @@ end
 SLASH_SHINKILI1 = "/shinkili"
 SLASH_SHINKILI2 = "/sk"
 SlashCmdList.SHINKILI = function(msg)
-    local input = trim(msg)
+    local input = Logic.trim(msg)
     local command, value = input:match("^(%S+)%s*(.-)$")
     command = command and command:lower() or ""
 
@@ -4758,7 +4731,7 @@ SlashCmdList.SHINKILI = function(msg)
             print("|cff33ff99Shinkili|r " .. L("MSG_SIZE_BAD"))
             return
         end
-        db().size = clamp(math.floor(numeric + 0.5), 24, 300)
+        db().size = Logic.clamp(math.floor(numeric + 0.5), 24, 300)
         applySize()
         syncPlacementControls()
         refreshVisibility()
@@ -4767,7 +4740,7 @@ SlashCmdList.SHINKILI = function(msg)
     end
 
     if command == "marker" then
-        local normalized = trim(value):lower()
+        local normalized = Logic.trim(value):lower()
         if normalized == "on" then
             db().showMarker = true
             updateEditorControls()
@@ -4787,7 +4760,7 @@ SlashCmdList.SHINKILI = function(msg)
     end
 
     if command == "minimap" then
-        local normalized = trim(value):lower()
+        local normalized = Logic.trim(value):lower()
         if normalized == "on" then
             db().showMinimapButton = true
             refreshMinimapButton()
@@ -4805,7 +4778,7 @@ SlashCmdList.SHINKILI = function(msg)
     end
 
     if command == "lang" or command == "locale" then
-        local raw = trim(value):lower()
+        local raw = Logic.trim(value):lower()
         local normalized
         if raw == "en" then
             normalized = "en"
@@ -4826,7 +4799,7 @@ SlashCmdList.SHINKILI = function(msg)
     end
 
     if command == "blacklist" then
-        local normalized = trim(value):lower()
+        local normalized = Logic.trim(value):lower()
         if normalized == "on" then
             setBlacklistEnabled(true, true)
             print("|cff33ff99Shinkili|r " .. L("MSG_BLACKLIST_ON"))

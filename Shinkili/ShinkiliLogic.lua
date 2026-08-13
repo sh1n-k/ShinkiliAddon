@@ -867,8 +867,6 @@ function Logic.sanitizeSettings(settings, config)
     settings.blacklist.enabled = settings.blacklist.enabled == true
     if type(settings.blacklist.toggleKey) ~= "string" or settings.blacklist.toggleKey == "" then
         settings.blacklist.toggleKey = nil
-    else
-        settings.blacklist.toggleKey = settings.blacklist.toggleKey
     end
     -- Legacy DBs predate the split: back then `entries` WAS the cooldown list and
     -- the master switch controlled it. `entries` is now applied permanently, so
@@ -934,14 +932,27 @@ function Logic.movePriorityEntry(entries, index, delta)
     return true
 end
 
---- First enabled entry whose spellId is in activeSet (map spellId -> true).
-function Logic.pickPriorityEntry(entries, activeSet)
-    if type(entries) ~= "table" or type(activeSet) ~= "table" then
+--- First enabled entry whose spell is active. `isActive` is a set
+--- (`{[spellId]=true}`) or a predicate `(spellId) -> truthy`.
+function Logic.pickPriorityEntry(entries, isActive)
+    if type(entries) ~= "table" or isActive == nil then
+        return nil
+    end
+    local isFn = type(isActive) == "function"
+    if not isFn and type(isActive) ~= "table" then
         return nil
     end
     for _, entry in ipairs(entries) do
-        if entry.enabled ~= false and entry.spellId and activeSet[entry.spellId] then
-            return entry
+        if entry.enabled ~= false and entry.spellId then
+            local active
+            if isFn then
+                active = isActive(entry.spellId)
+            else
+                active = isActive[entry.spellId]
+            end
+            if active then
+                return entry
+            end
         end
     end
     return nil

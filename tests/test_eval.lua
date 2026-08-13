@@ -509,6 +509,13 @@ freshPass()
 check("gateless entry blocked by its own live dot",
     Eval.evaluateEntry({id = 206}) == "fail")
 dotState[206] = nil
+-- Unreadable is not "confirmed active": the veto must not fire.
+local savedAuraLookup = C_UnitAuras.GetPlayerAuraBySpellID
+C_UnitAuras.GetPlayerAuraBySpellID = nil
+freshPass()
+check("unreadable own buff does not veto a gateless entry",
+    Eval.evaluateEntry({id = 205}) == "pass")
+C_UnitAuras.GetPlayerAuraBySpellID = savedAuraLookup
 freshPass()
 check("delegated entry is always unknown",
     Eval.evaluateEntry({id = 200, delegated = true}) == "unknown")
@@ -760,7 +767,15 @@ freshPass()
 local gatelessDetail = Eval.describeEntry({id = 205})
 check("describeEntry explains a gateless veto",
     #gatelessDetail == 2 and gatelessDetail[1].kind == "self-buff"
-        and gatelessDetail[1].verdict == "fail")
+        and gatelessDetail[1].verdict == "fail"
+        and gatelessDetail[2].kind == "self-dot")
+dotState[205] = true
+freshPass()
+local gatelessDotDetail = Eval.describeEntry({id = 205})
+check("describeEntry reports a live self-dot veto",
+    gatelessDotDetail[2].kind == "self-dot" and gatelessDotDetail[2].verdict == "fail")
+dotState[205] = nil
+freshPass()
 
 local savedAuraApi = C_UnitAuras.GetPlayerAuraBySpellID
 C_UnitAuras.GetPlayerAuraBySpellID = nil

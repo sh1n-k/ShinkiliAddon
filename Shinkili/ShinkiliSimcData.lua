@@ -6,9 +6,9 @@
 --   gates: {t="cd"} | {t="buff",id,neg} | {t="dot",id} | {t="execute"}
 --          | {t="resource",res,op,n} | {t="power",res,op,n}
 --          | {t="stack",id,op,n} | {t="targets",op,n}
---   The source drops the reference id from `cd`, the polarity from
---   `dot`, and the operator from `execute`, so those read as unknown at
---   runtime. `targets` is never emitted today. `stack` is carried but
+--   Bare `cd` (no reference id), `dot` (no polarity) and `execute`
+--   (no operator) gates read as unknown. `targets` is not emitted
+--   today. `stack` is carried but
 --   not evaluated: aura stack counts are secret in 12.0. A `resource` or
 --   `power` gate flagged deficit/ispct measures `n` against the maximum
 --   and is likewise not evaluable. See AGENTS.md.

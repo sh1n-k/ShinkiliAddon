@@ -72,9 +72,9 @@ end
 -- stay correct if Blizzard changes which contexts are restricted.
 --------------------------------------------------------------------------------
 
-function Secret.areAurasSecret()
-    if C_Secrets and C_Secrets.ShouldAurasBeSecret then
-        local ok, verdict = pcall(C_Secrets.ShouldAurasBeSecret)
+local function apiSecretFlag(reader)
+    if reader then
+        local ok, verdict = pcall(reader)
         if ok then
             local plain = Secret.plainBool(verdict)
             if plain ~= nil then
@@ -91,23 +91,12 @@ function Secret.areAurasSecret()
     return false
 end
 
+function Secret.areAurasSecret()
+    return apiSecretFlag(C_Secrets and C_Secrets.ShouldAurasBeSecret)
+end
+
 function Secret.areCooldownsSecret()
-    if C_Secrets and C_Secrets.ShouldCooldownsBeSecret then
-        local ok, verdict = pcall(C_Secrets.ShouldCooldownsBeSecret)
-        if ok then
-            local plain = Secret.plainBool(verdict)
-            if plain ~= nil then
-                return plain
-            end
-        end
-    end
-    if InCombatLockdown then
-        local ok, inCombat = pcall(InCombatLockdown)
-        if ok then
-            return Secret.plainBool(inCombat) == true
-        end
-    end
-    return false
+    return apiSecretFlag(C_Secrets and C_Secrets.ShouldCooldownsBeSecret)
 end
 
 --------------------------------------------------------------------------------
@@ -284,7 +273,7 @@ end
 
 --- Secrecy level of a spell's aura: 0 = never secret, >0 = may be hidden in
 --- combat, nil = the engine will not say.
-function Secret.getAuraSecrecy(spellId)
+local function getAuraSecrecy(spellId)
     if not (C_Secrets and C_Secrets.GetSpellAuraSecrecy) then
         return nil
     end
@@ -316,7 +305,7 @@ function Secret.isBuffActive(spellId)
     end
 
     if aura == nil then
-        if Secret.getAuraSecrecy(spellId) == NEVER_SECRET_LEVEL then
+        if getAuraSecrecy(spellId) == NEVER_SECRET_LEVEL then
             return false -- the lookup works for this aura, so it really is absent
         end
         if not Secret.areAurasSecret() then
