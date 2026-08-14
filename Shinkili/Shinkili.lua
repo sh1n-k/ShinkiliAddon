@@ -75,6 +75,36 @@ local defaults = {
     simcAssist = true,
     -- Account-wide: yellow interrupt bar above the main box.
     interruptEnabled = true,
+    vitals = {
+        health = {
+            enabled = false,
+            threshold = 35,
+            aboveColorIndex = 2,
+            belowColorIndex = 5,
+            locked = true,
+            size = 48,
+            point = "CENTER",
+            relativePoint = "CENTER",
+            x = -100,
+            y = -120,
+            frameStrata = "FULLSCREEN_DIALOG",
+            frameLevel = 190,
+        },
+        power = {
+            enabled = false,
+            threshold = 40,
+            aboveColorIndex = 6,
+            belowColorIndex = 4,
+            locked = true,
+            size = 48,
+            point = "CENTER",
+            relativePoint = "CENTER",
+            x = -100,
+            y = -60,
+            frameStrata = "FULLSCREEN_DIALOG",
+            frameLevel = 190,
+        },
+    },
 }
 
 local function L(key)
@@ -626,6 +656,7 @@ local function sanitizeConfig()
         reservedOverrideSize = #RESERVED_OVERRIDE_PALETTE,
         defaultOverrides = defaults.overrides,
         defenseDefaults = defaults.defense,
+        vitalsDefaults = defaults.vitals,
         frameDefaults = {
             frameStrata = defaults.frameStrata,
             frameLevel = defaults.frameLevel,
@@ -1374,6 +1405,9 @@ function feature.applyAllLayout()
     applyDefensePosition()
     applyFrameLayers()
     applyBlacklistBinding()
+    if ShinkiliVitals and ShinkiliVitals.applyLayout then
+        ShinkiliVitals.applyLayout()
+    end
 end
 
 local function onDefenseDragStop(self)
@@ -3937,6 +3971,12 @@ refreshOptionsLocale = function()
         if optionsTabs.blacklist then
             optionsTabs.blacklist:SetText(L("TAB_BLACKLIST"))
         end
+        if optionsTabs.vitals then
+            optionsTabs.vitals:SetText(L("TAB_VITALS"))
+        end
+        if ShinkiliVitals and ShinkiliVitals.refreshLocale then
+            ShinkiliVitals.refreshLocale()
+        end
     end
     if options.resetButton then
         options.resetButton:SetText(L("RESET_DEFAULTS"))
@@ -4172,6 +4212,9 @@ local function attachOptionsLifecycle(frame)
         selectOptionsTab(state.optionsTab or "main")
         refreshAllEditorViews()
         refreshVisibility()
+        if ShinkiliVitals and ShinkiliVitals.refreshPreview then
+            ShinkiliVitals.refreshPreview()
+        end
     end)
 
     frame:SetScript("OnHide", function()
@@ -4179,6 +4222,9 @@ local function attachOptionsLifecycle(frame)
         stopBindingListen()
         setPreview(nil)
         refreshVisibility()
+        if ShinkiliVitals and ShinkiliVitals.refreshPreview then
+            ShinkiliVitals.refreshPreview()
+        end
     end)
 end
 
@@ -4219,6 +4265,7 @@ local function createOptionsWindow()
     makeTab("defense", "TAB_DEFENSE", 1)
     makeTab("procs", "TAB_PROCS", 2)
     makeTab("blacklist", "TAB_BLACKLIST", 3)
+    makeTab("vitals", "TAB_VITALS", 4)
 
     local panelTop = -56
     local panelHeight = C.OPTIONS_HEIGHT - 112
@@ -4250,6 +4297,29 @@ local function createOptionsWindow()
     createBlacklistOptionsPanel(blacklistPanel)
     blacklistPanel:Hide()
     optionsPanels.blacklist = blacklistPanel
+
+    local vitalsPanel = CreateFrame("Frame", nil, options)
+    vitalsPanel:SetPoint("TOPLEFT", 14, panelTop)
+    vitalsPanel:SetSize(panelWidth, panelHeight)
+    if ShinkiliVitals and ShinkiliVitals.createOptionsPanel then
+        ShinkiliVitals.createOptionsPanel(vitalsPanel, {
+            getSettings = function()
+                return db()
+            end,
+            getPaletteColor = getPaletteColor,
+            getColorName = getColorName,
+            colorMenuText = feature.colorMenuText,
+            initStrataDropdown = feature.initStrataDropdown,
+            persist = feature.persistMappings,
+            isOptionsOpen = function()
+                return state.optionsOpen == true
+            end,
+            L = L,
+            paletteSize = #COLOR_PALETTE,
+        })
+    end
+    vitalsPanel:Hide()
+    optionsPanels.vitals = vitalsPanel
 
     createOptionsFooter(options)
     attachOptionsLifecycle(options)
@@ -4890,6 +4960,23 @@ local function initialize()
     ShinkiliDB.cooldownBox = nil
 
     refreshAvailableSpells()
+    if ShinkiliVitals and ShinkiliVitals.init then
+        ShinkiliVitals.init({
+            getSettings = function()
+                return db()
+            end,
+            getPaletteColor = getPaletteColor,
+            getColorName = getColorName,
+            colorMenuText = feature.colorMenuText,
+            initStrataDropdown = feature.initStrataDropdown,
+            persist = feature.persistMappings,
+            isOptionsOpen = function()
+                return state.optionsOpen == true
+            end,
+            L = L,
+            paletteSize = #COLOR_PALETTE,
+        })
+    end
     sanitizeSettings()
     feature.applyAllLayout()
     syncPlacementControls()

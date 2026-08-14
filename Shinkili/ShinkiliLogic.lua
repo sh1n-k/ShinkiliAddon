@@ -310,6 +310,144 @@ function Logic.deepCopy(value)
     return copy
 end
 
+local DEFAULT_VITALS_SPEC = {
+    health = {enabled = false, threshold = 35, aboveColorIndex = 2, belowColorIndex = 5},
+    power = {enabled = false, threshold = 40, aboveColorIndex = 6, belowColorIndex = 4},
+}
+
+local DEFAULT_VITALS_PLACEMENT = {
+    health = {
+        locked = true,
+        size = 48,
+        point = "CENTER",
+        relativePoint = "CENTER",
+        x = -100,
+        y = -120,
+        frameStrata = "FULLSCREEN_DIALOG",
+        frameLevel = 190,
+    },
+    power = {
+        locked = true,
+        size = 48,
+        point = "CENTER",
+        relativePoint = "CENTER",
+        x = -100,
+        y = -60,
+        frameStrata = "FULLSCREEN_DIALOG",
+        frameLevel = 190,
+    },
+}
+
+local function copyVitalsSpecChannel(channel, fallback)
+    fallback = fallback or {}
+    channel = type(channel) == "table" and channel or {}
+    return {
+        enabled = channel.enabled == true,
+        threshold = channel.threshold ~= nil and channel.threshold or fallback.threshold,
+        aboveColorIndex = channel.aboveColorIndex or fallback.aboveColorIndex,
+        belowColorIndex = channel.belowColorIndex or fallback.belowColorIndex,
+    }
+end
+
+local function copyVitalsPlacementChannel(channel, fallback)
+    fallback = fallback or {}
+    channel = type(channel) == "table" and channel or {}
+    local locked = channel.locked
+    if locked == nil then
+        locked = fallback.locked
+    end
+    return {
+        locked = locked ~= false,
+        size = channel.size ~= nil and channel.size or fallback.size,
+        point = channel.point or fallback.point,
+        relativePoint = channel.relativePoint or fallback.relativePoint,
+        x = channel.x ~= nil and channel.x or fallback.x,
+        y = channel.y ~= nil and channel.y or fallback.y,
+        frameStrata = channel.frameStrata or fallback.frameStrata,
+        frameLevel = channel.frameLevel or fallback.frameLevel,
+    }
+end
+
+local function defaultVitalsSpec()
+    return {
+        health = copyVitalsSpecChannel(DEFAULT_VITALS_SPEC.health, DEFAULT_VITALS_SPEC.health),
+        power = copyVitalsSpecChannel(DEFAULT_VITALS_SPEC.power, DEFAULT_VITALS_SPEC.power),
+    }
+end
+
+local function applyVitalsSpecChannel(target, source, fallback)
+    source = type(source) == "table" and source or {}
+    local copied = copyVitalsSpecChannel(source, fallback)
+    target.enabled = copied.enabled
+    target.threshold = copied.threshold
+    target.aboveColorIndex = copied.aboveColorIndex
+    target.belowColorIndex = copied.belowColorIndex
+end
+
+local function applyVitalsPlacementChannel(target, source, fallback)
+    source = type(source) == "table" and source or {}
+    local copied = copyVitalsPlacementChannel(source, fallback)
+    target.locked = copied.locked
+    target.size = copied.size
+    target.point = copied.point
+    target.relativePoint = copied.relativePoint
+    target.x = copied.x
+    target.y = copied.y
+    target.frameStrata = copied.frameStrata
+    target.frameLevel = copied.frameLevel
+end
+
+local function sanitizeVitalsColorIndex(index, defaultIndex, colorPaletteSize)
+    local numeric = tonumber(index)
+    if numeric then
+        numeric = math.floor(numeric + 0.5)
+    end
+    if not numeric or numeric < 2 or numeric > (colorPaletteSize or 27) then
+        return defaultIndex or 2
+    end
+    return numeric
+end
+
+local function sanitizeVitalsChannel(channel, defaults, colorPaletteSize)
+    defaults = type(defaults) == "table" and defaults or {}
+    channel = type(channel) == "table" and channel or {}
+    channel.enabled = channel.enabled == true
+    local threshold = tonumber(channel.threshold)
+    if threshold then
+        channel.threshold = Logic.clamp(math.floor(threshold + 0.5), 1, 99)
+    else
+        channel.threshold = defaults.threshold or 35
+    end
+    channel.aboveColorIndex = sanitizeVitalsColorIndex(
+        channel.aboveColorIndex,
+        defaults.aboveColorIndex or 2,
+        colorPaletteSize
+    )
+    channel.belowColorIndex = sanitizeVitalsColorIndex(
+        channel.belowColorIndex,
+        defaults.belowColorIndex or 5,
+        colorPaletteSize
+    )
+    channel.size = Logic.clamp(tonumber(channel.size) or defaults.size or 48, 24, 300)
+    channel.x = Logic.clamp(
+        math.floor((tonumber(channel.x) or defaults.x or -100) + 0.5),
+        -1000,
+        1000
+    )
+    channel.y = Logic.clamp(
+        math.floor((tonumber(channel.y) or defaults.y or -120) + 0.5),
+        -1000,
+        1000
+    )
+    channel.point = type(channel.point) == "string" and channel.point or (defaults.point or "CENTER")
+    channel.relativePoint = type(channel.relativePoint) == "string" and channel.relativePoint
+        or (defaults.relativePoint or "CENTER")
+    channel.locked = channel.locked ~= false
+    channel.frameStrata = Logic.sanitizeFrameStrata(channel.frameStrata, defaults.frameStrata)
+    channel.frameLevel = Logic.sanitizeFrameLevel(channel.frameLevel, defaults.frameLevel)
+    return channel
+end
+
 function Logic.specKey(classFile, specIndex)
     if type(classFile) ~= "string" or classFile == "" then
         return nil
@@ -328,6 +466,7 @@ local function emptySpecProfile()
         defense = {enabled = true, entries = {}},
         blacklist = {enabled = false, entries = {}, cooldowns = {}},
         simcAssist = true,
+        vitals = defaultVitalsSpec(),
     }
 end
 
@@ -354,6 +493,16 @@ function Logic.captureSpecFromSettings(settings)
             cooldowns = Logic.deepCopy(blacklist.cooldowns) or {},
         },
         simcAssist = settings.simcAssist ~= false,
+        vitals = {
+            health = copyVitalsSpecChannel(
+                type(settings.vitals) == "table" and settings.vitals.health or nil,
+                DEFAULT_VITALS_SPEC.health
+            ),
+            power = copyVitalsSpecChannel(
+                type(settings.vitals) == "table" and settings.vitals.power or nil,
+                DEFAULT_VITALS_SPEC.power
+            ),
+        },
     }
 end
 
@@ -383,6 +532,16 @@ function Logic.captureCharPlacementFromSettings(settings)
             frameLevel = defense.frameLevel,
         },
         blacklistToggleKey = type(blacklist.toggleKey) == "string" and blacklist.toggleKey or nil,
+        vitals = {
+            health = copyVitalsPlacementChannel(
+                type(settings.vitals) == "table" and settings.vitals.health or nil,
+                DEFAULT_VITALS_PLACEMENT.health
+            ),
+            power = copyVitalsPlacementChannel(
+                type(settings.vitals) == "table" and settings.vitals.power or nil,
+                DEFAULT_VITALS_PLACEMENT.power
+            ),
+        },
     }
 end
 
@@ -401,6 +560,12 @@ function Logic.applySpecToSettings(settings, spec)
     settings.blacklist.entries = Logic.deepCopy(spec.blacklist and spec.blacklist.entries) or {}
     settings.blacklist.cooldowns = Logic.deepCopy(spec.blacklist and spec.blacklist.cooldowns) or {}
     settings.simcAssist = spec.simcAssist ~= false
+    settings.vitals = type(settings.vitals) == "table" and settings.vitals or {}
+    settings.vitals.health = type(settings.vitals.health) == "table" and settings.vitals.health or {}
+    settings.vitals.power = type(settings.vitals.power) == "table" and settings.vitals.power or {}
+    local specVitals = type(spec.vitals) == "table" and spec.vitals or {}
+    applyVitalsSpecChannel(settings.vitals.health, specVitals.health, DEFAULT_VITALS_SPEC.health)
+    applyVitalsSpecChannel(settings.vitals.power, specVitals.power, DEFAULT_VITALS_SPEC.power)
     return settings
 end
 
@@ -467,6 +632,20 @@ function Logic.applyCharPlacementToSettings(settings, placement)
     else
         settings.blacklist.toggleKey = placement.blacklistToggleKey
     end
+    settings.vitals = type(settings.vitals) == "table" and settings.vitals or {}
+    settings.vitals.health = type(settings.vitals.health) == "table" and settings.vitals.health or {}
+    settings.vitals.power = type(settings.vitals.power) == "table" and settings.vitals.power or {}
+    local placeVitals = type(placement.vitals) == "table" and placement.vitals or {}
+    applyVitalsPlacementChannel(
+        settings.vitals.health,
+        placeVitals.health,
+        DEFAULT_VITALS_PLACEMENT.health
+    )
+    applyVitalsPlacementChannel(
+        settings.vitals.power,
+        placeVitals.power,
+        DEFAULT_VITALS_PLACEMENT.power
+    )
     return settings
 end
 
@@ -482,6 +661,7 @@ local function seedFromAccountRoot(accountDb, mappings, includeSharedLists)
             defense = {enabled = true, entries = {}},
             blacklist = {enabled = false, entries = {}, cooldowns = {}},
             simcAssist = true,
+            vitals = defaultVitalsSpec(),
         }
     end
     return {
@@ -497,6 +677,7 @@ local function seedFromAccountRoot(accountDb, mappings, includeSharedLists)
             cooldowns = Logic.deepCopy(blacklist.cooldowns) or {},
         },
         simcAssist = accountDb.simcAssist ~= false,
+        vitals = defaultVitalsSpec(),
     }
 end
 
@@ -509,6 +690,7 @@ local function stripSharedListsFromSeed(seed, keepMappings)
         defense = {enabled = true, entries = {}},
         blacklist = {enabled = false, entries = {}, cooldowns = {}},
         simcAssist = seed.simcAssist ~= false,
+        vitals = defaultVitalsSpec(),
     }
 end
 
@@ -682,6 +864,13 @@ function Logic.ensureSpecProfile(charProfile, specKey)
     end
     if spec.simcAssist == nil then
         spec.simcAssist = true
+    end
+    spec.vitals = type(spec.vitals) == "table" and spec.vitals or {}
+    if type(spec.vitals.health) ~= "table" then
+        spec.vitals.health = copyVitalsSpecChannel(nil, DEFAULT_VITALS_SPEC.health)
+    end
+    if type(spec.vitals.power) ~= "table" then
+        spec.vitals.power = copyVitalsSpecChannel(nil, DEFAULT_VITALS_SPEC.power)
     end
     return spec
 end
@@ -880,6 +1069,33 @@ function Logic.sanitizeSettings(settings, config)
     -- Cooldown suppress list: same shape as entries, gated by the master switch.
     settings.blacklist.cooldowns = Logic.sanitizeBlacklistEntries(settings.blacklist.cooldowns)
     settings.simcAssist = settings.simcAssist ~= false
+
+    local vitalsDefaults = type(config.vitalsDefaults) == "table" and config.vitalsDefaults or {}
+    settings.vitals = type(settings.vitals) == "table" and settings.vitals or {}
+    local function channelDefaults(kind)
+        local provided = vitalsDefaults[kind]
+        if type(provided) == "table" then
+            return provided
+        end
+        local merged = {}
+        for key, value in pairs(DEFAULT_VITALS_PLACEMENT[kind]) do
+            merged[key] = value
+        end
+        for key, value in pairs(DEFAULT_VITALS_SPEC[kind]) do
+            merged[key] = value
+        end
+        return merged
+    end
+    settings.vitals.health = sanitizeVitalsChannel(
+        settings.vitals.health,
+        channelDefaults("health"),
+        config.colorPaletteSize
+    )
+    settings.vitals.power = sanitizeVitalsChannel(
+        settings.vitals.power,
+        channelDefaults("power"),
+        config.colorPaletteSize
+    )
 
     return settings
 end

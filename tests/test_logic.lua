@@ -831,6 +831,91 @@ check("capture of an empty settings root is the empty profile", (function()
         and empty.defense.enabled == true and empty.simcAssist == true
 end)())
 
+local preVitalsSpec = {
+    mappings = {{spellId = 11, colorIndex = 2, markerIndex = 1}},
+    procs = {entries = {}},
+    defense = {enabled = true, entries = {}},
+    blacklist = {enabled = false, entries = {}, cooldowns = {}},
+    simcAssist = true,
+}
+local preVitalsLive = {defense = {}, procs = {}, blacklist = {}, vitals = {health = {enabled = true}}}
+local appliedLegacy = Logic.applySpecToSettings(preVitalsLive, preVitalsSpec)
+check("applySpecToSettings fills vitals when spec has none",
+    appliedLegacy.vitals ~= nil
+        and appliedLegacy.vitals.health.enabled == false
+        and appliedLegacy.vitals.power.enabled == false
+        and appliedLegacy.vitals.health.threshold == 35
+        and appliedLegacy.vitals.power.aboveColorIndex == 6)
+
+local vitalsCaptureSource = {
+    mappings = {},
+    procs = {entries = {}},
+    defense = {enabled = true, entries = {}},
+    blacklist = {enabled = false, entries = {}, cooldowns = {}},
+    simcAssist = true,
+    vitals = {
+        health = {enabled = true, threshold = 22, aboveColorIndex = 3, belowColorIndex = 5},
+        power = {enabled = true, threshold = 70, aboveColorIndex = 7, belowColorIndex = 4},
+    },
+}
+local vitalsCaptured = Logic.captureSpecFromSettings(vitalsCaptureSource)
+vitalsCaptureSource.vitals.health.threshold = 1
+local vitalsRoundTrip = Logic.applySpecToSettings({vitals = {health = {}, power = {}}}, vitalsCaptured)
+check("vitals spec capture/apply round-trip",
+    vitalsRoundTrip.vitals.health.enabled == true
+        and vitalsRoundTrip.vitals.health.threshold == 22
+        and vitalsRoundTrip.vitals.health.aboveColorIndex == 3
+        and vitalsRoundTrip.vitals.power.threshold == 70
+        and vitalsRoundTrip.vitals.power.aboveColorIndex == 7
+        and vitalsCaptured.health == nil)
+
+local placeSource = {
+    vitals = {
+        health = {size = 55, x = -10, y = -20, locked = false, frameStrata = "DIALOG", frameLevel = 80,
+            point = "CENTER", relativePoint = "CENTER"},
+        power = {size = 60, x = 4, y = 8, locked = true, frameStrata = "HIGH", frameLevel = 90,
+            point = "CENTER", relativePoint = "CENTER"},
+    },
+    defense = {},
+    blacklist = {},
+}
+local placeCaptured = Logic.captureCharPlacementFromSettings(placeSource)
+placeSource.vitals.health.size = 1
+local placeLive = {vitals = {health = {}, power = {}}, defense = {}, blacklist = {}}
+Logic.applyCharPlacementToSettings(placeLive, placeCaptured)
+check("vitals placement capture/apply round-trip",
+    placeLive.vitals.health.size == 55
+        and placeLive.vitals.health.x == -10
+        and placeLive.vitals.health.locked == false
+        and placeLive.vitals.power.size == 60
+        and placeLive.vitals.power.frameStrata == "HIGH")
+
+local oldPlacement = {size = 40, defense = {}, blacklistToggleKey = nil}
+local oldPlaceLive = {vitals = {health = {size = 99}, power = {}}, defense = {}, blacklist = {}}
+Logic.applyCharPlacementToSettings(oldPlaceLive, oldPlacement)
+check("applyCharPlacement without vitals fills defaults",
+    oldPlaceLive.vitals.health.size == 48
+        and oldPlaceLive.vitals.power.y == -60)
+
+local zeroPlace = {
+    vitals = {
+        health = {size = 48, x = 0, y = 0, locked = true, point = "CENTER",
+            relativePoint = "CENTER", frameStrata = "DIALOG", frameLevel = 80},
+        power = {size = 48, x = 0, y = 0, locked = true, point = "CENTER",
+            relativePoint = "CENTER", frameStrata = "HIGH", frameLevel = 90},
+    },
+    defense = {},
+    blacklist = {},
+}
+local zeroCaptured = Logic.captureCharPlacementFromSettings(zeroPlace)
+local zeroLive = {vitals = {health = {}, power = {}}, defense = {}, blacklist = {}}
+Logic.applyCharPlacementToSettings(zeroLive, zeroCaptured)
+check("placement x=0 y=0 survives capture/apply",
+    zeroLive.vitals.health.x == 0
+        and zeroLive.vitals.health.y == 0
+        and zeroLive.vitals.power.x == 0
+        and zeroLive.vitals.power.y == 0)
+
 -- The exclusion keybind lives on the character placement, so a profile without
 -- one has to CLEAR the live key rather than leave the previous character's.
 local keyed = {blacklist = {toggleKey = "F9"}}

@@ -14,6 +14,7 @@ local files = {
     "ShinkiliSecret",
     "ShinkiliTrack",
     "ShinkiliEval",
+    "ShinkiliVitals",
     "ShinkiliSimcData",
     "Shinkili",
 }

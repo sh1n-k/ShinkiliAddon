@@ -11,5 +11,6 @@ ShinkiliLogic.lua
 ShinkiliSecret.lua
 ShinkiliTrack.lua
 ShinkiliEval.lua
+ShinkiliVitals.lua
 ShinkiliSimcData.lua
 Shinkili.lua
