@@ -62,6 +62,7 @@ read_globals = {
     "SetOverrideBindingClick",
     "UnitClass",
     "GetSpecialization",
+    "C_SpecializationInfo",
     "UnitCanAttack",
     "UnitIsDead",
     "UnitExists",

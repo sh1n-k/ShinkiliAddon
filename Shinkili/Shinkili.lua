@@ -1023,7 +1023,18 @@ getSimcSpecKey = function()
     if not classFile then
         return nil
     end
-    local specIndex = GetSpecialization and Secret.plainNumber(GetSpecialization()) or nil
+    -- The bare global was deprecated in 11.2.0 and C_SpecializationInfo is the
+    -- current home, so read the namespace first and keep the global as fallback:
+    -- either client answers. Losing this key is silent and expensive -- every
+    -- spec falls back to the seed profile and `simcAssist` can never persist,
+    -- because persistMappings writes nothing without a spec key.
+    local specIndex
+    if C_SpecializationInfo and C_SpecializationInfo.GetSpecialization then
+        specIndex = Secret.plainNumber(C_SpecializationInfo.GetSpecialization())
+    end
+    if not specIndex and GetSpecialization then
+        specIndex = Secret.plainNumber(GetSpecialization())
+    end
     if not specIndex or specIndex < 1 then
         return nil
     end
@@ -1283,9 +1294,8 @@ end
 
 --- opts.skipBind: keep live root lists (after an in-UI edit) instead of reloading
 --- from charProfiles, which would wipe unsaved inserts.
---- opts.skipPersist: sanitize live values without writing them back (options
---- OnShow). SetChecked can fire OnClick; persisting that would store the
---- widget's old state over a live true.
+--- opts.skipPersist: sanitize live values without writing them back. Opening the
+--- options window is not an edit, so it must not write to charProfiles.
 --- Named `opts`, not `options`: that name is the options-window frame at module
 --- scope, and shadowing it here would be silent.
 local function sanitizeSettings(opts)
@@ -2441,9 +2451,7 @@ local function refreshAllEditorViews()
             UIDropDownMenu_SetText(main.mainStrataDropdown, strata)
         end
         if main.simcAssistCheck then
-            main.simcAssistCheck._shinkiliSilent = true
             main.simcAssistCheck:SetChecked(db().simcAssist ~= false)
-            main.simcAssistCheck._shinkiliSilent = nil
         end
         if main.interruptEnable then
             main.interruptEnable:SetChecked(db().interruptEnabled ~= false)
@@ -2651,14 +2659,7 @@ local function createMainOptionsPanel(frame)
     simcCheck:SetPoint("TOPLEFT", currentSpellText, "BOTTOMLEFT", 0, -4)
     simcCheck.text:SetText(L("SIMC_ASSIST"))
     simcCheck:SetScript("OnClick", function(self)
-        if self._shinkiliSilent then
-            return
-        end
-        local checked = Secret.plainBool(self:GetChecked())
-        if checked == nil then
-            return
-        end
-        db().simcAssist = checked
+        db().simcAssist = self:GetChecked() and true or false
         -- Per-spec: without persist, bindMappings (options OnShow / spec change)
         -- reloads spec.simcAssist and the uncheck is lost.
         feature.persistMappings()
@@ -3983,11 +3984,10 @@ refreshOptionsLocale = function()
         if main.sizeHolder and main.sizeHolder.label then main.sizeHolder.label:SetText(L("SIZE")) end
         if main.xHolder and main.xHolder.label then main.xHolder.label:SetText(L("X")) end
         if main.yHolder and main.yHolder.label then main.yHolder.label:SetText(L("Y")) end
+        -- Text only: refreshAllEditorViews owns the checked state and follows
+        -- every call site of this function.
         if main.simcAssistCheck and main.simcAssistCheck.text then
             main.simcAssistCheck.text:SetText(L("SIMC_ASSIST"))
-            main.simcAssistCheck._shinkiliSilent = true
-            main.simcAssistCheck:SetChecked(db().simcAssist ~= false)
-            main.simcAssistCheck._shinkiliSilent = nil
         end
         if main.interruptEnable and main.interruptEnable.text then
             main.interruptEnable.text:SetText(L("INTERRUPT_ENABLE"))
@@ -4162,9 +4162,9 @@ local function attachOptionsLifecycle(frame)
     frame:SetScript("OnShow", function()
         state.optionsOpen = true
         refreshAvailableSpells()
-        -- Do not rebind or persist: bind can apply the seed (simcAssist=true),
-        -- and SetChecked can fire OnClick which would persist the widget's
-        -- previous unchecked state over a live true.
+        -- Do not rebind or persist. Without a readable spec key bind falls back
+        -- to the seed and overwrites the live lists, so merely opening this
+        -- window could discard them; and opening it is not an edit to save.
         sanitizeSettings({skipBind = true, skipPersist = true})
         syncEditorSelection()
         updateSpellState()
