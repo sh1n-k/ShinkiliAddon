@@ -198,6 +198,11 @@ check("markers unique", settings.mappings[1].markerIndex ~= settings.mappings[2]
 check("override color repaired", settings.overrides.casting.colorIndex == 1)
 check("override enabled false kept", settings.overrides.casting.enabled == false)
 check("missing override filled", settings.overrides.channeling.colorIndex == 2)
+check("interruptEnabled defaults on", settings.interruptEnabled == true)
+
+local interruptOff = {interruptEnabled = false}
+Logic.sanitizeSettings(interruptOff, baseConfig())
+check("interruptEnabled false kept", interruptOff.interruptEnabled == false)
 
 -- legacy migration when mappings empty
 local legacy = {

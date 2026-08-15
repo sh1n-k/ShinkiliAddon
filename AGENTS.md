@@ -13,6 +13,7 @@
 | `Shinkili/ShinkiliSecret.lua` | 12.0 secret-value layer: tri-state reads, DurationObject probe, resources |
 | `Shinkili/ShinkiliTrack.lua` | Local cooldown / charge / target-DoT reconstruction |
 | `Shinkili/ShinkiliEval.lua` | Display ids, castability verdicts, SimC gate verdicts, per-pass memo |
+| `Shinkili/ShinkiliVitals.lua` | Health/power solid-color boxes (threshold + above/below colors) |
 | `Shinkili/ShinkiliSimcData.lua` | Bundled SimC-derived priority tables (generated) |
 | `Shinkili/Shinkili.lua` | Runtime UI, options tabs, indicators, slash, minimap |
 | `tools/gen_simc_priority.py` | Regenerates `ShinkiliSimcData.lua` from JustAC/SimC source |
@@ -21,14 +22,15 @@
 | `tests/test_secret.lua` | Tri-state contract of `ShinkiliSecret` against a stubbed API |
 | `tests/test_track.lua` | Local cooldown / charge / DoT reconstruction |
 | `tests/test_eval.lua` | Castability verdicts, gate verdicts, per-pass memo dedup |
+| `tests/test_vitals.lua` | Health/power boxes, ColorCurve rebuild, vitals sanitize |
 | `scripts/run_tests.sh` | Runs unit tests |
 | `scripts/sync_to_wow.sh` | Copies addon into local WoW AddOns |
 
 ## SavedVariables
 - `ShinkiliDB` (primary). Legacy `BlizzShinDB` is still accepted once at load.
 - **Account-wide:** `locale`, minimap fields, cast/channel `overrides`, `interruptEnabled` (yellow interrupt bar).
-- **Per character** (`charProfiles[Name-Realm].placement`): main/defense box size/position/lock/layer, blacklist toggle key.
-- **Per character+spec** (`charProfiles[…].specs[CLASS_N]`): `mappings`, `procs.entries`, `defense.entries` (+ enabled), `blacklist.entries` / `cooldowns` / cooldown-filter `enabled`, `simcAssist`.
+- **Per character** (`charProfiles[Name-Realm].placement`): main/defense/vitals box size/position/lock/layer, blacklist toggle key.
+- **Per character+spec** (`charProfiles[…].specs[CLASS_N]`): `mappings`, `procs.entries`, `defense.entries` (+ enabled), `blacklist.entries` / `cooldowns` / cooldown-filter `enabled`, `simcAssist`, `vitals.health/power` (`enabled` + `threshold` + above/below color).
 - Migration: v2 creates `charProfiles`; v3 stops sharing account-wide defense/proc/blacklist seeds across other characters. Spec lists lazy-clone from that character’s `seed`. Defense/proc rows are **not** pruned on bind (that used to persist into profiles and delete talent-swapped rows); unlearned entries stay listed and simply fail castability.
 - The pre-`charProfiles` `charMappings[Name-Realm]` bucket is still written (`feature.syncCharMappings`) and is **not** dead: `Logic.migrateLegacyCharMappings` uses that pointer identity to tell a live per-character list apart from a pre-migration account-wide one it must move.
 
@@ -51,9 +53,9 @@
 - **`delegated` entries** (SimC condition needs a value 12.0 hides) are always `unknown` — they can never override AC. 439 of 681 bundled entries (64%). Of the remaining 242, **209 are promotable** and 33 are blocked by the lossy-gate rule above.
 - **Proc** display override still wins on top of the assist pick, and is castability-filtered with the **main-box** policy (`Eval.isPickable`): hidden on `unusable`/`out_of_range`/`on_cd`, shown on `no_resource`. Filtering procs on affordability would blink a procced spender at 20Hz. **Permanent/cooldown exclusions also apply** via `Logic.isSpellExcluded` so a blacklisted skill cannot paint the main box through a proc. Overlay detection tries book id and display/override id. In the Procs editor, picking a spell that already has a main mapping seeds the colour dropdown with that mapping's colour (both boxes paint the same signal); an unmapped spell leaves the current pick alone.
 - **Defense box placement** is applied only on load/option edits/drag-stop — never on the 20Hz refresh path (that snap-back broke drag). Unlocked or options-open shows a placeholder when no defense is active (symmetric with main unlock preview).
-- **Layers**: per-box `frameStrata` + `frameLevel` (options on Main / Defense).
+- **Layers**: per-box `frameStrata` + `frameLevel` (options on Main / Defense / Vitals).
 - **Exclusions**: two lists. `blacklist.entries` is permanent and always applied; `blacklist.cooldowns` is gated by `blacklist.enabled` (keybind toggle, `/sk blacklist`, centre toast). `Logic.sanitizeSettings` migrates a legacy single list into `cooldowns` so an upgrade cannot silently make old entries permanent. Override bindings are deferred out of combat (`pendingBlacklistBinding`).
-- **Options tabs**: Main / Defense / Procs / Blacklist; language + minimap in footer. Interrupt signal toggle lives on Main.
+- **Options tabs**: Main / Defense / Procs / Blacklist / Vitals; language + minimap in footer. Interrupt signal toggle lives on Main. Yellow bar is Show/Hide via `Logic.shouldShowInterruptIndicator` (hidden when not casting, shielded, or the flag is unreadable).
 
 ## Git Safety
 - Small doc/metadata-only changes may land on `main`.

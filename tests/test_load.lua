@@ -89,6 +89,21 @@ else
         free, MIN_FREE_LOCAL_SLOTS))
 end
 
+-- KeySim interrupt is Show/Hide from shouldShowInterruptIndicator. A secret or
+-- shielded cast must hide the frame, not leave it shown for an engine alpha sink.
+if source
+    and source:find("getTargetCastInterruptInfo", 1, true)
+    and source:find("Logic.shouldShowInterruptIndicator", 1, true)
+    and source:find(":Show()", 1, true)
+    and source:find(":Hide()", 1, true)
+    and not source:find("SetAlphaFromBoolean", 1, true)
+then
+    print("  OK  interrupt path is Show/Hide via shouldShowInterruptIndicator")
+else
+    failures = failures + 1
+    print("  FAIL  interrupt path must Show/Hide via shouldShowInterruptIndicator")
+end
+
 if failures > 0 then
     print(string.format("%d failure(s)", failures))
     os.exit(1)

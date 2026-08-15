@@ -75,34 +75,15 @@ local function paletteColor(index)
 end
 
 local function clamp(value, minimum, maximum)
-    if ShinkiliLogic and ShinkiliLogic.clamp then
-        return ShinkiliLogic.clamp(value, minimum, maximum)
-    end
-    if value < minimum then
-        return minimum
-    end
-    if value > maximum then
-        return maximum
-    end
-    return value
+    return ShinkiliLogic.clamp(value, minimum, maximum)
 end
 
 local function parseInteger(text)
-    if ShinkiliLogic and ShinkiliLogic.parseInteger then
-        return ShinkiliLogic.parseInteger(text)
-    end
-    local value = tonumber(text)
-    if not value then
-        return nil
-    end
-    return math.floor(value + 0.5)
+    return ShinkiliLogic.parseInteger(text)
 end
 
 local function sanitizeFrameLevel(value, defaultLevel)
-    if ShinkiliLogic and ShinkiliLogic.sanitizeFrameLevel then
-        return ShinkiliLogic.sanitizeFrameLevel(value, defaultLevel)
-    end
-    return clamp(math.floor((tonumber(value) or defaultLevel or 190) + 0.5), 1, 10000)
+    return ShinkiliLogic.sanitizeFrameLevel(value, defaultLevel)
 end
 
 --------------------------------------------------------------------------------
