@@ -21,8 +21,6 @@ end
 
 local defaultOverrides = {
     casting = {enabled = true, colorIndex = 1},
-    channeling = {enabled = true, colorIndex = 2},
-    empower = {enabled = true, colorIndex = 3},
 }
 
 local function baseConfig(extra)
@@ -183,6 +181,8 @@ local settings = {
     cooldownBox = {leftover = true},
     overrides = {
         casting = {enabled = false, colorIndex = 99},
+        channeling = {enabled = true, colorIndex = 2},
+        empower = {enabled = true, colorIndex = 3},
     },
 }
 Logic.sanitizeSettings(settings, baseConfig({legacyMappingSlots = 12}))
@@ -197,8 +197,13 @@ check("duplicate color cleared", settings.mappings[2].spellId == 200 and setting
 check("markers unique", settings.mappings[1].markerIndex ~= settings.mappings[2].markerIndex)
 check("override color repaired", settings.overrides.casting.colorIndex == 1)
 check("override enabled false kept", settings.overrides.casting.enabled == false)
-check("missing override filled", settings.overrides.channeling.colorIndex == 2)
+check("stale channeling override dropped", settings.overrides.channeling == nil)
+check("stale empower override dropped", settings.overrides.empower == nil)
 check("interruptEnabled defaults on", settings.interruptEnabled == true)
+
+local filledOverrides = {overrides = {}}
+Logic.sanitizeSettings(filledOverrides, baseConfig())
+check("missing casting override filled", filledOverrides.overrides.casting.colorIndex == 1)
 
 local interruptOff = {interruptEnabled = false}
 Logic.sanitizeSettings(interruptOff, baseConfig())

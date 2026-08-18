@@ -292,7 +292,7 @@ end
 --------------------------------------------------------------------------------
 -- Character + specialization profiles
 --
--- Account-wide: locale, minimap, cast/channel overrides.
+-- Account-wide: locale, minimap, cast overrides.
 -- Per character: main/defense box placement, blacklist toggle key.
 -- Per character+spec: mappings, procs, defense entries, exclusion lists, simcAssist.
 -- Migration copies existing data into each character's seed so every spec starts
@@ -906,6 +906,12 @@ function Logic.sanitizeSettings(settings, config)
 
         overrideConfig.colorIndex = colorIndex
         settings.overrides[stateKey] = overrideConfig
+    end
+
+    for stateKey in pairs(settings.overrides) do
+        if type(config.defaultOverrides[stateKey]) ~= "table" then
+            settings.overrides[stateKey] = nil
+        end
     end
 
     local migratedMappings = {}

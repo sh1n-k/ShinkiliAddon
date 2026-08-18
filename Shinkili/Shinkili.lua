@@ -47,8 +47,6 @@ local defaults = {
     frameLevel = 200,
     overrides = {
         casting = {enabled = true, colorIndex = 1},
-        channeling = {enabled = true, colorIndex = 2},
-        empower = {enabled = true, colorIndex = 3},
     },
     defense = {
         enabled = true,
@@ -161,8 +159,8 @@ local MARKER_PALETTE = {
 
 local RESERVED_OVERRIDE_PALETTE = {
     {name = "Frost Signal", rgba = {0.78, 0.84, 0.92, 1.00}},
-    {name = "Channel Amber", rgba = {1.00, 0.83, 0.38, 1.00}},
-    {name = "Empower Violet", rgba = {0.82, 0.66, 1.00, 1.00}},
+    {name = "Warm Amber", rgba = {1.00, 0.83, 0.38, 1.00}},
+    {name = "Soft Violet", rgba = {0.82, 0.66, 1.00, 1.00}},
     {name = "Alert White", rgba = {0.95, 0.95, 0.95, 1.00}},
     {name = "Slate Blue", rgba = {0.56, 0.67, 0.88, 1.00}},
     {name = "Soft Coral", rgba = {0.98, 0.72, 0.66, 1.00}},
@@ -384,10 +382,6 @@ local lockToggleButton
 local markerToggleCheck
 local castingOverrideCheck
 local castingOverrideDropdown
-local channelingOverrideCheck
-local channelingOverrideDropdown
-local empowerOverrideCheck
-local empowerOverrideDropdown
 local mappingScrollFrame
 local emptyMappingsText
 local mappingRows = {}
@@ -1257,31 +1251,26 @@ local function scanTrackedSpells()
 end
 
 local function getCurrentCastState()
-    local hasEmpowerDurations = false
+    -- A channel or empower is not a cast; those APIs can share UnitCastingInfo.
+    if UnitChannelInfo then
+        local _, _, _, _, _, _, _, channelSpellId = UnitChannelInfo("player")
+        if channelSpellId and channelSpellId > 0 then
+            return nil, nil
+        end
+    end
     if UnitEmpoweredStageDurations then
         local durations = {UnitEmpoweredStageDurations("player")}
         if #durations == 1 and type(durations[1]) == "table" and durations[1][1] ~= nil then
             durations = durations[1]
         end
-        hasEmpowerDurations = #durations > 0
-    end
-
-    if UnitChannelInfo then
-        local _, _, _, _, _, _, _, channelSpellId, isEmpowered = UnitChannelInfo("player")
-        if channelSpellId and channelSpellId > 0 then
-            if isEmpowered or hasEmpowerDurations then
-                return "empower", channelSpellId
-            end
-            return "channeling", channelSpellId
+        if #durations > 0 then
+            return nil, nil
         end
     end
 
     if UnitCastingInfo then
         local _, _, _, _, _, _, _, _, spellId = UnitCastingInfo("player")
         if spellId and spellId > 0 then
-            if hasEmpowerDurations then
-                return "empower", spellId
-            end
             return "casting", spellId
         end
     end
@@ -2144,24 +2133,10 @@ function updateEditorControls()
     if castingOverrideCheck then
         castingOverrideCheck:SetChecked(getOverrideEnabled("casting"))
     end
-    if channelingOverrideCheck then
-        channelingOverrideCheck:SetChecked(getOverrideEnabled("channeling"))
-    end
-    if empowerOverrideCheck then
-        empowerOverrideCheck:SetChecked(getOverrideEnabled("empower"))
-    end
 
     if castingOverrideDropdown then
         UIDropDownMenu_SetSelectedValue(castingOverrideDropdown, getOverrideColorIndex("casting"))
         UIDropDownMenu_SetText(castingOverrideDropdown, getReservedColorName(getOverrideColorIndex("casting")))
-    end
-    if channelingOverrideDropdown then
-        UIDropDownMenu_SetSelectedValue(channelingOverrideDropdown, getOverrideColorIndex("channeling"))
-        UIDropDownMenu_SetText(channelingOverrideDropdown, getReservedColorName(getOverrideColorIndex("channeling")))
-    end
-    if empowerOverrideDropdown then
-        UIDropDownMenu_SetSelectedValue(empowerOverrideDropdown, getOverrideColorIndex("empower"))
-        UIDropDownMenu_SetText(empowerOverrideDropdown, getReservedColorName(getOverrideColorIndex("empower")))
     end
 end
 
@@ -2860,7 +2835,7 @@ local function createMainOptionsPanel(frame)
     local placementColumnWidth = bottomWidth - overridesColumnWidth - 16
 
     local overridesColumn = CreateFrame("Frame", nil, frame)
-    overridesColumn:SetSize(overridesColumnWidth, 170)
+    overridesColumn:SetSize(overridesColumnWidth, 90)
     overridesColumn:SetPoint("TOPLEFT", mappingScrollFrame, "BOTTOMLEFT", 0, -10)
 
     local overridesLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -2880,18 +2855,6 @@ local function createMainOptionsPanel(frame)
     castingOverrideCheck = castingOverrideRow.check
     castingOverrideDropdown = castingOverrideRow.dropdown
     frame.castingOverrideRow = castingOverrideRow
-
-    local channelingOverrideRow = createOverrideControl(overridesColumn, L("CHANNELING"), "channeling", overridesColumnWidth, 150)
-    channelingOverrideRow:SetPoint("TOPLEFT", castingOverrideRow, "BOTTOMLEFT", 0, -4)
-    channelingOverrideCheck = channelingOverrideRow.check
-    channelingOverrideDropdown = channelingOverrideRow.dropdown
-    frame.channelingOverrideRow = channelingOverrideRow
-
-    local empowerOverrideRow = createOverrideControl(overridesColumn, L("EMPOWER"), "empower", overridesColumnWidth, 150)
-    empowerOverrideRow:SetPoint("TOPLEFT", channelingOverrideRow, "BOTTOMLEFT", 0, -4)
-    empowerOverrideCheck = empowerOverrideRow.check
-    empowerOverrideDropdown = empowerOverrideRow.dropdown
-    frame.empowerOverrideRow = empowerOverrideRow
 
     local placementColumn = CreateFrame("Frame", nil, frame)
     placementColumn:SetSize(placementColumnWidth, 190)
@@ -4039,12 +4002,6 @@ refreshOptionsLocale = function()
         end
         if castingOverrideCheck and castingOverrideCheck.text then
             castingOverrideCheck.text:SetText(L("CASTING"))
-        end
-        if channelingOverrideCheck and channelingOverrideCheck.text then
-            channelingOverrideCheck.text:SetText(L("CHANNELING"))
-        end
-        if empowerOverrideCheck and empowerOverrideCheck.text then
-            empowerOverrideCheck.text:SetText(L("EMPOWER"))
         end
         if emptyMappingsText then
             emptyMappingsText:SetText(L("NO_MAPPINGS"))

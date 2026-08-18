@@ -306,8 +306,6 @@ local function sanitizeWith(channel)
         reservedOverrideSize = 6,
         defaultOverrides = {
             casting = {enabled = true, colorIndex = 1},
-            channeling = {enabled = true, colorIndex = 2},
-            empower = {enabled = true, colorIndex = 3},
         },
         vitalsDefaults = {
             health = {
