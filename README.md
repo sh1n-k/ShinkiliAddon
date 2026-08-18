@@ -14,7 +14,8 @@ WoW retail addon: turns Blizzard Assisted Combat recommendations into configurab
 - Vitals tab: solid-color health and primary-power boxes (one color at or above the threshold, another below)
 - Procs tab: active spell overlays override the main box
 - **Exclusions** tab, two lists: a permanent blacklist that always applies, and a cooldown list gated by the master switch (`/sk blacklist on|off`, keybind toggle, centre toast). Upgrading from an older build moves the old single list into the cooldown list, so nothing becomes permanently excluded behind your back
-- Frame layer (strata/level) for main, defense, and vitals boxes
+- **Flag** tab: one paletted box you toggle on or off (`/sk flag on|off`, keybind, centre toast). KeySim can use the Show/Hide as a condition; recommendations are unchanged
+- Frame layer (strata/level) for main, defense, vitals, enemies, and flag boxes
 - English / Korean UI language (saved)
 - Minimap button and `/sk` for settings
 
@@ -28,6 +29,8 @@ Shinkili/
   ShinkiliTrack.lua    # local cooldown / charge / target-DoT reconstruction
   ShinkiliEval.lua     # castability + SimC gate verdicts, per-pass memo
   ShinkiliVitals.lua   # health / power solid-color boxes
+  ShinkiliEnemies.lua  # hostile nameplate count bar
+  ShinkiliFlag.lua     # KeySim condition toggle box
   ShinkiliSimcData.lua # SimC-derived priority tables (generated)
   Shinkili.lua         # UI + runtime
 tools/gen_simc_priority.py

@@ -103,6 +103,33 @@ local defaults = {
             frameLevel = 190,
         },
     },
+    enemies = {
+        enabled = true,
+        combatOnly = true,
+        colorIndex = 3,
+        locked = true,
+        width = 160,
+        height = 28,
+        point = "CENTER",
+        relativePoint = "CENTER",
+        x = 0,
+        y = -180,
+        frameStrata = "FULLSCREEN_DIALOG",
+        frameLevel = 185,
+    },
+    flag = {
+        enabled = false,
+        toggleKey = nil,
+        colorIndex = 7,
+        locked = true,
+        size = 48,
+        point = "CENTER",
+        relativePoint = "CENTER",
+        x = 100,
+        y = -180,
+        frameStrata = "FULLSCREEN_DIALOG",
+        frameLevel = 180,
+    },
 }
 
 local function L(key)
@@ -651,6 +678,8 @@ local function sanitizeConfig()
         defaultOverrides = defaults.overrides,
         defenseDefaults = defaults.defense,
         vitalsDefaults = defaults.vitals,
+        enemiesDefaults = defaults.enemies,
+        flagDefaults = defaults.flag,
         frameDefaults = {
             frameStrata = defaults.frameStrata,
             frameLevel = defaults.frameLevel,
@@ -1396,6 +1425,12 @@ function feature.applyAllLayout()
     applyBlacklistBinding()
     if ShinkiliVitals and ShinkiliVitals.applyLayout then
         ShinkiliVitals.applyLayout()
+    end
+    if ShinkiliEnemies and ShinkiliEnemies.applyLayout then
+        ShinkiliEnemies.applyLayout()
+    end
+    if ShinkiliFlag and ShinkiliFlag.applyLayout then
+        ShinkiliFlag.applyLayout()
     end
 end
 
@@ -2507,6 +2542,8 @@ local function resetToDefaults()
     settings.procs = Logic.deepCopy(defaults.procs)
     settings.blacklist = Logic.deepCopy(defaults.blacklist)
     settings.simcAssist = defaults.simcAssist
+    settings.enemies = Logic.deepCopy(defaults.enemies)
+    settings.flag = Logic.deepCopy(defaults.flag)
     settings.cooldownBox = nil
 
     -- Capture placement only AFTER defense and blacklist are back at defaults:
@@ -3937,8 +3974,20 @@ refreshOptionsLocale = function()
         if optionsTabs.vitals then
             optionsTabs.vitals:SetText(L("TAB_VITALS"))
         end
+        if optionsTabs.enemies then
+            optionsTabs.enemies:SetText(L("TAB_ENEMIES"))
+        end
+        if optionsTabs.flag then
+            optionsTabs.flag:SetText(L("TAB_FLAG"))
+        end
         if ShinkiliVitals and ShinkiliVitals.refreshLocale then
             ShinkiliVitals.refreshLocale()
+        end
+        if ShinkiliEnemies and ShinkiliEnemies.refreshLocale then
+            ShinkiliEnemies.refreshLocale()
+        end
+        if ShinkiliFlag and ShinkiliFlag.refreshLocale then
+            ShinkiliFlag.refreshLocale()
         end
     end
     if options.resetButton then
@@ -4172,15 +4221,30 @@ local function attachOptionsLifecycle(frame)
         if ShinkiliVitals and ShinkiliVitals.refreshPreview then
             ShinkiliVitals.refreshPreview()
         end
+        if ShinkiliEnemies and ShinkiliEnemies.refresh then
+            ShinkiliEnemies.refresh()
+        end
+        if ShinkiliFlag and ShinkiliFlag.refresh then
+            ShinkiliFlag.refresh()
+        end
     end)
 
     frame:SetScript("OnHide", function()
         state.optionsOpen = false
         stopBindingListen()
+        if ShinkiliFlag and ShinkiliFlag.stopBindingListen then
+            ShinkiliFlag.stopBindingListen()
+        end
         setPreview(nil)
         refreshVisibility()
         if ShinkiliVitals and ShinkiliVitals.refreshPreview then
             ShinkiliVitals.refreshPreview()
+        end
+        if ShinkiliEnemies and ShinkiliEnemies.refresh then
+            ShinkiliEnemies.refresh()
+        end
+        if ShinkiliFlag and ShinkiliFlag.refresh then
+            ShinkiliFlag.refresh()
         end
     end)
 end
@@ -4223,6 +4287,8 @@ local function createOptionsWindow()
     makeTab("procs", "TAB_PROCS", 2)
     makeTab("blacklist", "TAB_BLACKLIST", 3)
     makeTab("vitals", "TAB_VITALS", 4)
+    makeTab("enemies", "TAB_ENEMIES", 5)
+    makeTab("flag", "TAB_FLAG", 6)
 
     local panelTop = -56
     local panelHeight = C.OPTIONS_HEIGHT - 112
@@ -4277,6 +4343,50 @@ local function createOptionsWindow()
     end
     vitalsPanel:Hide()
     optionsPanels.vitals = vitalsPanel
+
+    local enemiesPanel = CreateFrame("Frame", nil, options)
+    enemiesPanel:SetPoint("TOPLEFT", 14, panelTop)
+    enemiesPanel:SetSize(panelWidth, panelHeight)
+    if ShinkiliEnemies and ShinkiliEnemies.createOptionsPanel then
+        ShinkiliEnemies.createOptionsPanel(enemiesPanel, {
+            getSettings = function()
+                return db()
+            end,
+            getPaletteColor = getPaletteColor,
+            getColorName = getColorName,
+            initStrataDropdown = feature.initStrataDropdown,
+            persist = feature.persistMappings,
+            isOptionsOpen = function()
+                return state.optionsOpen == true
+            end,
+            L = L,
+            paletteSize = #COLOR_PALETTE,
+        })
+    end
+    enemiesPanel:Hide()
+    optionsPanels.enemies = enemiesPanel
+
+    local flagPanel = CreateFrame("Frame", nil, options)
+    flagPanel:SetPoint("TOPLEFT", 14, panelTop)
+    flagPanel:SetSize(panelWidth, panelHeight)
+    if ShinkiliFlag and ShinkiliFlag.createOptionsPanel then
+        ShinkiliFlag.createOptionsPanel(flagPanel, {
+            getSettings = function()
+                return db()
+            end,
+            getPaletteColor = getPaletteColor,
+            getColorName = getColorName,
+            initStrataDropdown = feature.initStrataDropdown,
+            persist = feature.persistMappings,
+            isOptionsOpen = function()
+                return state.optionsOpen == true
+            end,
+            L = L,
+            paletteSize = #COLOR_PALETTE,
+        })
+    end
+    flagPanel:Hide()
+    optionsPanels.flag = flagPanel
 
     createOptionsFooter(options)
     attachOptionsLifecycle(options)
@@ -4480,6 +4590,7 @@ local function printUsage()
     print(L("CMD_RESET"))
     print(L("CMD_LANG"))
     print(L("CMD_BLACKLIST"))
+    print(L("CMD_FLAG"))
     print(L("CMD_WHY"))
 end
 
@@ -4867,6 +4978,26 @@ SlashCmdList.SHINKILI = function(msg)
         return
     end
 
+    if command == "flag" then
+        local normalized = Logic.trim(value):lower()
+        if normalized == "on" then
+            if ShinkiliFlag and ShinkiliFlag.setEnabled then
+                ShinkiliFlag.setEnabled(true, true)
+            end
+            print("|cff33ff99Shinkili|r " .. L("MSG_FLAG_ON"))
+            return
+        end
+        if normalized == "off" then
+            if ShinkiliFlag and ShinkiliFlag.setEnabled then
+                ShinkiliFlag.setEnabled(false, true)
+            end
+            print("|cff33ff99Shinkili|r " .. L("MSG_FLAG_OFF"))
+            return
+        end
+        print("|cff33ff99Shinkili|r " .. L("MSG_FLAG_USAGE"))
+        return
+    end
+
     if command == "reset" then
         feature.confirmResetToDefaults()
         return
@@ -4914,6 +5045,10 @@ local function initialize()
     if ShinkiliDB.interruptEnabled == nil then
         ShinkiliDB.interruptEnabled = defaults.interruptEnabled
     end
+    ShinkiliDB.enemies = type(ShinkiliDB.enemies) == "table" and ShinkiliDB.enemies
+        or Logic.deepCopy(defaults.enemies)
+    ShinkiliDB.flag = type(ShinkiliDB.flag) == "table" and ShinkiliDB.flag
+        or Logic.deepCopy(defaults.flag)
     ShinkiliDB.cooldownBox = nil
 
     refreshAvailableSpells()
@@ -4925,6 +5060,38 @@ local function initialize()
             getPaletteColor = getPaletteColor,
             getColorName = getColorName,
             colorMenuText = feature.colorMenuText,
+            initStrataDropdown = feature.initStrataDropdown,
+            persist = feature.persistMappings,
+            isOptionsOpen = function()
+                return state.optionsOpen == true
+            end,
+            L = L,
+            paletteSize = #COLOR_PALETTE,
+        })
+    end
+    if ShinkiliEnemies and ShinkiliEnemies.init then
+        ShinkiliEnemies.init({
+            getSettings = function()
+                return db()
+            end,
+            getPaletteColor = getPaletteColor,
+            getColorName = getColorName,
+            initStrataDropdown = feature.initStrataDropdown,
+            persist = feature.persistMappings,
+            isOptionsOpen = function()
+                return state.optionsOpen == true
+            end,
+            L = L,
+            paletteSize = #COLOR_PALETTE,
+        })
+    end
+    if ShinkiliFlag and ShinkiliFlag.init then
+        ShinkiliFlag.init({
+            getSettings = function()
+                return db()
+            end,
+            getPaletteColor = getPaletteColor,
+            getColorName = getColorName,
             initStrataDropdown = feature.initStrataDropdown,
             persist = feature.persistMappings,
             isOptionsOpen = function()
@@ -4984,6 +5151,9 @@ local function initialize()
             local previousReason = state.recommendReason
 
             updateSpellState()
+            if ShinkiliEnemies and ShinkiliEnemies.refresh then
+                ShinkiliEnemies.refresh()
+            end
 
             local changed = state.currentSpellId ~= previousSpellId
                 or state.currentCastState ~= previousCastState

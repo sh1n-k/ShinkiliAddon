@@ -15,6 +15,8 @@ local files = {
     "ShinkiliTrack",
     "ShinkiliEval",
     "ShinkiliVitals",
+    "ShinkiliEnemies",
+    "ShinkiliFlag",
     "ShinkiliSimcData",
     "Shinkili",
 }
@@ -102,6 +104,23 @@ then
 else
     failures = failures + 1
     print("  FAIL  interrupt path must Show/Hide via shouldShowInterruptIndicator")
+end
+
+local flagHandle = io.open(root .. "../Shinkili/ShinkiliFlag.lua")
+local flagSource = flagHandle and flagHandle:read("a") or nil
+if flagHandle then
+    flagHandle:close()
+end
+if flagSource
+    and flagSource:find("Logic.shouldShowFlagBox", 1, true)
+    and flagSource:find(":Show()", 1, true)
+    and flagSource:find(":Hide()", 1, true)
+    and not flagSource:find("SetAlphaFromBoolean", 1, true)
+then
+    print("  OK  flag path is Show/Hide via shouldShowFlagBox")
+else
+    failures = failures + 1
+    print("  FAIL  flag path must Show/Hide via shouldShowFlagBox")
 end
 
 if failures > 0 then

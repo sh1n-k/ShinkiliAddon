@@ -14,7 +14,9 @@
 | `Shinkili/ShinkiliTrack.lua` | Local cooldown / charge / target-DoT reconstruction |
 | `Shinkili/ShinkiliEval.lua` | Display ids, castability verdicts, SimC gate verdicts, per-pass memo |
 | `Shinkili/ShinkiliVitals.lua` | Health/power solid-color boxes (threshold + above/below colors) |
-| `Shinkili/ShinkiliSimcData.lua` | Bundled SimC-derived priority tables (generated) |
+| `Shinkili/ShinkiliEnemies.lua` | Hostile nameplate count bar (5 cells, one fill color, combat-only option) |
+| `Shinkili/ShinkiliFlag.lua` | Manual KeySim condition box (one toggle, one color, Show/Hide only) |
+| `Shinkili/ShinkiliSimcData.lua` | Bundled SimC-derived priority tables (generated; v2, 35 specs, `st`/`aoe` lists, 681 entries) |
 | `Shinkili/Shinkili.lua` | Runtime UI, options tabs, indicators, slash, minimap |
 | `tools/gen_simc_priority.py` | Regenerates `ShinkiliSimcData.lua` from JustAC/SimC source |
 | `tests/test_load.lua` | Every file compiles + TOC load order (catches the 200-local cap) |
@@ -25,14 +27,40 @@
 | `tests/test_vitals.lua` | Health/power boxes, ColorCurve rebuild, vitals sanitize |
 | `scripts/run_tests.sh` | Runs unit tests |
 | `scripts/sync_to_wow.sh` | Copies addon into local WoW AddOns |
+| `.luacheckrc` | luacheck config; every WoW API global used must be listed in `read_globals` |
 
 ## SavedVariables
 - `ShinkiliDB` (primary). Legacy `BlizzShinDB` is still accepted once at load.
-- **Account-wide:** `locale`, minimap fields, cast/channel `overrides`, `interruptEnabled` (yellow interrupt bar).
-- **Per character** (`charProfiles[Name-Realm].placement`): main/defense/vitals box size/position/lock/layer, blacklist toggle key.
+- **Account-wide:** `locale`, minimap fields, cast `overrides`, `interruptEnabled` (yellow interrupt bar).
+- **Per character** (`charProfiles[Name-Realm].placement`): main/defense/vitals/enemies/flag box size/position/lock/layer, enemies enabled/combatOnly/color, flag enabled/color/toggle key, blacklist toggle key.
 - **Per character+spec** (`charProfiles[…].specs[CLASS_N]`): `mappings`, `procs.entries`, `defense.entries` (+ enabled), `blacklist.entries` / `cooldowns` / cooldown-filter `enabled`, `simcAssist`, `vitals.health/power` (`enabled` + `threshold` + above/below color).
 - Migration: v2 creates `charProfiles`; v3 stops sharing account-wide defense/proc/blacklist seeds across other characters. Spec lists lazy-clone from that character’s `seed`. Defense/proc rows are **not** pruned on bind (that used to persist into profiles and delete talent-swapped rows); unlearned entries stay listed and simply fail castability.
 - The pre-`charProfiles` `charMappings[Name-Realm]` bucket is still written (`feature.syncCharMappings`) and is **not** dead: `Logic.migrateLegacyCharMappings` uses that pointer identity to tell a live per-character list apart from a pre-migration account-wide one it must move.
+
+### Live root vs spec bucket
+Every per-spec field exists **twice**: the live copy on the `db()` root (what the
+runtime and the options UI read) and the stored copy in `charProfiles[…].specs[key]`.
+`feature.bindMappings` loads bucket → root; `feature.persistMappings` writes root → bucket.
+
+- **A UI edit that only assigns to the root is not saved.** The next bind (options
+  open, spec change, login) reloads the bucket and silently reverts it. Every editor
+  path must end in `persistMappings()` — directly, or via `sanitizeSettings()`, which
+  binds and persists unless told otherwise. The SimC checkbox shipped without it and
+  looked like a "checkbox does not stick" bug for exactly this reason.
+- `boundSpecKey` (module-local) records the bucket the root was last loaded from.
+  `persistMappings` targets **that**, not the live spec, because
+  `PLAYER_SPECIALIZATION_CHANGED` already reports the incoming spec — writing to the
+  live key there would dump the outgoing spec's lists into the incoming bucket.
+- **Spec key is a single point of failure.** `getSimcSpecKey` reads
+  `C_SpecializationInfo.GetSpecialization` first and falls back to the bare
+  `GetSpecialization` (deprecated in 11.2.0). If it ever returns nil, the failure is
+  silent and total: bind falls back to `seed` for every spec, `persistMappings` writes
+  nothing at all, and SimC data lookup misses (`refreshSimcStatus` shows "no bundled
+  data"). Check this key first whenever per-spec settings "stop saving".
+- **Opening the options window is not an edit.** `OnShow` runs
+  `sanitizeSettings({skipBind = true, skipPersist = true})`: without a readable spec
+  key, bind would overwrite the live lists from `seed`, so merely opening the window
+  could discard them, and there is nothing to save on open.
 
 ## Runtime model
 - **Main box (best single pick)** — `Logic.pickRecommendation`, four stages:
@@ -53,13 +81,19 @@
 - **`delegated` entries** (SimC condition needs a value 12.0 hides) are always `unknown` — they can never override AC. 439 of 681 bundled entries (64%). Of the remaining 242, **209 are promotable** and 33 are blocked by the lossy-gate rule above.
 - **Proc** display override still wins on top of the assist pick, and is castability-filtered with the **main-box** policy (`Eval.isPickable`): hidden on `unusable`/`out_of_range`/`on_cd`, shown on `no_resource`. Filtering procs on affordability would blink a procced spender at 20Hz. **Permanent/cooldown exclusions also apply** via `Logic.isSpellExcluded` so a blacklisted skill cannot paint the main box through a proc. Overlay detection tries book id and display/override id. In the Procs editor, picking a spell that already has a main mapping seeds the colour dropdown with that mapping's colour (both boxes paint the same signal); an unmapped spell leaves the current pick alone.
 - **Defense box placement** is applied only on load/option edits/drag-stop — never on the 20Hz refresh path (that snap-back broke drag). Unlocked or options-open shows a placeholder when no defense is active (symmetric with main unlock preview).
-- **Layers**: per-box `frameStrata` + `frameLevel` (options on Main / Defense / Vitals).
+- **Layers**: per-box `frameStrata` + `frameLevel` (options on Main / Defense / Vitals / Enemies / Flag).
+- **Enemy bar**: five equal cells filled left-to-right from `Eval.countHostileNameplates`. One palette fill color. `combatOnly` (default on) hides it out of combat; options-open or unlocked still previews.
+- **Flag box**: one paletted square toggled by checkbox / keybind / `/sk flag`. Real Show/Hide for KeySim; does not touch the pick, exclusions, or procs. Options-open or unlocked previews a gray placeholder when the toggle is off so KeySim does not see the live color during setup. Binding owner is a dedicated frame so blacklist `ClearOverrideBindings(addon)` cannot wipe it.
 - **Exclusions**: two lists. `blacklist.entries` is permanent and always applied; `blacklist.cooldowns` is gated by `blacklist.enabled` (keybind toggle, `/sk blacklist`, centre toast). `Logic.sanitizeSettings` migrates a legacy single list into `cooldowns` so an upgrade cannot silently make old entries permanent. Override bindings are deferred out of combat (`pendingBlacklistBinding`).
-- **Options tabs**: Main / Defense / Procs / Blacklist / Vitals; language + minimap in footer. Interrupt signal toggle lives on Main. Yellow bar is Show/Hide via `Logic.shouldShowInterruptIndicator` (hidden when not casting, shielded, or the flag is unreadable).
+- **Options tabs**: Main / Defense / Procs / Blacklist / Vitals / Enemies / Flag; language + minimap in footer. Interrupt signal toggle lives on Main. Yellow bar is Show/Hide via `Logic.shouldShowInterruptIndicator` (hidden when not casting, shielded, or the interrupt flag is unreadable).
 
 ## Git Safety
 - Small doc/metadata-only changes may land on `main`.
 - Ask before destructive or high-cost work (mass rename, formatter-wide rewrite, large dependency drops).
+- `origin` is `sh1n-k/ShinkiliAddon`. The local `gh` keyring holds more than one account
+  and the active one is not always `sh1n-k`, which fails the push with a 403 (`Permission
+  … denied`) *after* the commit already exists. Check `gh auth status` before pushing;
+  switch with `gh auth switch -u sh1n-k` and switch back afterwards.
 
 ## Known data loss (upstream)
 All of this happens in JustAC's `tools/gen_simc_rotations.py`, before our
@@ -92,22 +126,34 @@ on a talent be verified rather than silently dropped.
 
 ## Stage C semantics
 The override takes the **highest-priority entry it can fully verify**, skipping
-unverifiable ones above it rather than aborting. With 65% of entries `delegated`,
+unverifiable ones above it rather than aborting. With 64% of entries `delegated`,
 aborting at the first unknown would disable the feature outright. So the
 guarantee is "nothing unproven ever wins", not "SimC's true first choice always
 wins".
 
 ## Validation
 Prefer in order:
-1. `luacheck Shinkili/`
+1. `luacheck Shinkili/` — addon code is expected at **0 warnings / 0 errors**. Scope it to
+   `Shinkili/`: `tests/` deliberately overwrites read-only API globals to stub them and
+   reports ~113 warnings that are not defects.
 2. `./scripts/run_tests.sh`
 3. `./scripts/sync_to_wow.sh` when in-game check is needed (`/reload`, `/sk`)
 
-If a step is skipped, report why and the exact command.
+If a step is skipped, report why and the exact command. Nothing here reaches the live WoW
+API — castability, spec key and secret reads are only exercised against stubs, so any
+change to those paths carries an in-game verification gap worth stating explicitly.
 
 ## WoW Lua Guardrails
 - **`Shinkili.lua` is one chunk and Lua caps a chunk at 200 locals.** luacheck reports a file over the cap as clean while the game refuses to load the addon. `tests/test_load.lua` guards this (it also fails below 4 free slots, so the cap is never reached silently) — when it trips, move a cohesive block into a module (that is why `ShinkiliEval.lua` exists), do not shave individual locals.
 - **Shared helpers go on the `feature` table, not into a new top-level `local`.** That is the whole point of `feature`: `applyAllLayout`, `syncCharMappings`, `refreshSimcStatus`, `initSpellPickerDropdown`, `initEntryColorDropdown`, `initStrataDropdown` and `createExcludeRow` are all reused across tabs and cost no local slot. They are looked up at call time, so definition order inside the chunk does not matter.
+- **`SetChecked` does not fire `OnClick`.** Only `Click()` runs the handler. Do not add
+  re-entrancy guards around a `SetChecked` refresh — one was added on that false premise
+  and removed again. Keep the split: refresh helpers own the *checked state*, locale
+  helpers own the *label text*.
+- **The `Secret` layer is for game-API return values, not our own widgets.** A CheckButton
+  this addon created answers a plain boolean, so wrapping `GetChecked()` in
+  `Secret.plainBool` only adds a nil branch that can never run — and a `return` on that
+  branch would leave the widget visually toggled while the setting stayed unchanged.
 - Split large options UI into helper builders; avoid one monolithic options function.
 - Nested callbacks that close over many locals can break WoW Lua — extract helpers before adding more controls.
 - Reuse reset/refresh/lifecycle handlers instead of duplicating long callbacks.

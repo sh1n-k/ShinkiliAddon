@@ -12,5 +12,7 @@ ShinkiliSecret.lua
 ShinkiliTrack.lua
 ShinkiliEval.lua
 ShinkiliVitals.lua
+ShinkiliEnemies.lua
+ShinkiliFlag.lua
 ShinkiliSimcData.lua
 Shinkili.lua

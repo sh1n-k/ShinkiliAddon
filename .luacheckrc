@@ -11,6 +11,8 @@ globals = {
     "ShinkiliEval",
     "ShinkiliSimcData",
     "ShinkiliVitals",
+    "ShinkiliEnemies",
+    "ShinkiliFlag",
     "SLASH_SHINKILI1",
     "SLASH_SHINKILI2",
     SlashCmdList = {
@@ -75,6 +77,7 @@ read_globals = {
     "GetTime",
     "GetSpellCooldown",
     "C_NamePlate",
+    "UnitAffectingCombat",
     "C_SpellActivationOverlay",
     "C_AssistedCombat",
     "C_Spell",

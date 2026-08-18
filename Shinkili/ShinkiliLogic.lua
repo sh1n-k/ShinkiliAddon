@@ -310,6 +310,70 @@ function Logic.deepCopy(value)
     return copy
 end
 
+Logic.ENEMY_CELL_COUNT = 5
+
+local DEFAULT_ENEMIES = {
+    enabled = true,
+    combatOnly = true,
+    colorIndex = 3,
+    locked = true,
+    width = 160,
+    height = 28,
+    point = "CENTER",
+    relativePoint = "CENTER",
+    x = 0,
+    y = -180,
+    frameStrata = "FULLSCREEN_DIALOG",
+    frameLevel = 185,
+}
+
+function Logic.filledEnemyCells(count, maxCells)
+    local cap = tonumber(maxCells) or Logic.ENEMY_CELL_COUNT
+    local n = tonumber(count) or 0
+    if n < 0 then
+        n = 0
+    end
+    if n > cap then
+        n = cap
+    end
+    return math.floor(n)
+end
+
+function Logic.shouldShowEnemyBox(enabled, inCombat, optionsOpen, locked, combatOnly)
+    if enabled == false then
+        return false
+    end
+    if optionsOpen == true or locked == false then
+        return true
+    end
+    if combatOnly == false then
+        return true
+    end
+    return inCombat == true
+end
+
+local DEFAULT_FLAG = {
+    enabled = false,
+    toggleKey = nil,
+    colorIndex = 7,
+    locked = true,
+    size = 48,
+    point = "CENTER",
+    relativePoint = "CENTER",
+    x = 100,
+    y = -180,
+    frameStrata = "FULLSCREEN_DIALOG",
+    frameLevel = 180,
+}
+
+--- KeySim condition box. Preview when options are open or the box is unlocked.
+function Logic.shouldShowFlagBox(enabled, optionsOpen, locked)
+    if optionsOpen == true or locked == false then
+        return true
+    end
+    return enabled == true
+end
+
 local DEFAULT_VITALS_SPEC = {
     health = {enabled = false, threshold = 35, aboveColorIndex = 2, belowColorIndex = 5},
     power = {enabled = false, threshold = 40, aboveColorIndex = 6, belowColorIndex = 4},
@@ -382,6 +446,170 @@ local function applyVitalsSpecChannel(target, source, fallback)
     target.threshold = copied.threshold
     target.aboveColorIndex = copied.aboveColorIndex
     target.belowColorIndex = copied.belowColorIndex
+end
+
+local function copyEnemiesPlacement(channel, fallback)
+    fallback = fallback or DEFAULT_ENEMIES
+    channel = type(channel) == "table" and channel or {}
+    local locked = channel.locked
+    if locked == nil then
+        locked = fallback.locked
+    end
+    local enabled = channel.enabled
+    if enabled == nil then
+        enabled = fallback.enabled
+    end
+    local combatOnly = channel.combatOnly
+    if combatOnly == nil then
+        combatOnly = fallback.combatOnly
+    end
+    return {
+        enabled = enabled ~= false,
+        combatOnly = combatOnly ~= false,
+        colorIndex = channel.colorIndex ~= nil and channel.colorIndex or fallback.colorIndex,
+        locked = locked ~= false,
+        width = channel.width ~= nil and channel.width or fallback.width,
+        height = channel.height ~= nil and channel.height or fallback.height,
+        point = channel.point or fallback.point,
+        relativePoint = channel.relativePoint or fallback.relativePoint,
+        x = channel.x ~= nil and channel.x or fallback.x,
+        y = channel.y ~= nil and channel.y or fallback.y,
+        frameStrata = channel.frameStrata or fallback.frameStrata,
+        frameLevel = channel.frameLevel or fallback.frameLevel,
+    }
+end
+
+local function applyEnemiesPlacement(target, source, fallback)
+    local copied = copyEnemiesPlacement(source, fallback)
+    target.enabled = copied.enabled
+    target.combatOnly = copied.combatOnly
+    target.colorIndex = copied.colorIndex
+    target.locked = copied.locked
+    target.width = copied.width
+    target.height = copied.height
+    target.point = copied.point
+    target.relativePoint = copied.relativePoint
+    target.x = copied.x
+    target.y = copied.y
+    target.frameStrata = copied.frameStrata
+    target.frameLevel = copied.frameLevel
+end
+
+local function sanitizeEnemies(channel, defaults, colorPaletteSize)
+    defaults = type(defaults) == "table" and defaults or DEFAULT_ENEMIES
+    channel = type(channel) == "table" and channel or {}
+    channel.enabled = channel.enabled ~= false
+    channel.combatOnly = channel.combatOnly ~= false
+    local colorIndex = tonumber(channel.colorIndex)
+    if colorIndex then
+        colorIndex = math.floor(colorIndex + 0.5)
+    end
+    if not colorIndex or colorIndex < 2 or colorIndex > (colorPaletteSize or 27) then
+        colorIndex = defaults.colorIndex or 3
+    end
+    channel.colorIndex = colorIndex
+    channel.width = Logic.clamp(tonumber(channel.width) or defaults.width or 160, 80, 400)
+    channel.height = Logic.clamp(tonumber(channel.height) or defaults.height or 28, 16, 80)
+    channel.x = Logic.clamp(
+        math.floor((tonumber(channel.x) or defaults.x or 0) + 0.5),
+        -1000,
+        1000
+    )
+    channel.y = Logic.clamp(
+        math.floor((tonumber(channel.y) or defaults.y or -180) + 0.5),
+        -1000,
+        1000
+    )
+    channel.point = type(channel.point) == "string" and channel.point or (defaults.point or "CENTER")
+    channel.relativePoint = type(channel.relativePoint) == "string" and channel.relativePoint
+        or (defaults.relativePoint or "CENTER")
+    channel.locked = channel.locked ~= false
+    channel.frameStrata = Logic.sanitizeFrameStrata(channel.frameStrata, defaults.frameStrata)
+    channel.frameLevel = Logic.sanitizeFrameLevel(channel.frameLevel, defaults.frameLevel)
+    return channel
+end
+
+local function copyFlagPlacement(channel, fallback)
+    fallback = fallback or DEFAULT_FLAG
+    channel = type(channel) == "table" and channel or {}
+    local locked = channel.locked
+    if locked == nil then
+        locked = fallback.locked
+    end
+    local enabled = channel.enabled
+    if enabled == nil then
+        enabled = fallback.enabled
+    end
+    local toggleKey = channel.toggleKey
+    if type(toggleKey) ~= "string" or toggleKey == "" then
+        toggleKey = fallback.toggleKey
+    end
+    if type(toggleKey) ~= "string" or toggleKey == "" then
+        toggleKey = nil
+    end
+    return {
+        enabled = enabled == true,
+        toggleKey = toggleKey,
+        colorIndex = channel.colorIndex ~= nil and channel.colorIndex or fallback.colorIndex,
+        locked = locked ~= false,
+        size = channel.size ~= nil and channel.size or fallback.size,
+        point = channel.point or fallback.point,
+        relativePoint = channel.relativePoint or fallback.relativePoint,
+        x = channel.x ~= nil and channel.x or fallback.x,
+        y = channel.y ~= nil and channel.y or fallback.y,
+        frameStrata = channel.frameStrata or fallback.frameStrata,
+        frameLevel = channel.frameLevel or fallback.frameLevel,
+    }
+end
+
+local function applyFlagPlacement(target, source, fallback)
+    local copied = copyFlagPlacement(source, fallback)
+    target.enabled = copied.enabled
+    target.toggleKey = copied.toggleKey
+    target.colorIndex = copied.colorIndex
+    target.locked = copied.locked
+    target.size = copied.size
+    target.point = copied.point
+    target.relativePoint = copied.relativePoint
+    target.x = copied.x
+    target.y = copied.y
+    target.frameStrata = copied.frameStrata
+    target.frameLevel = copied.frameLevel
+end
+
+local function sanitizeFlag(channel, defaults, colorPaletteSize)
+    defaults = type(defaults) == "table" and defaults or DEFAULT_FLAG
+    channel = type(channel) == "table" and channel or {}
+    channel.enabled = channel.enabled == true
+    if type(channel.toggleKey) ~= "string" or channel.toggleKey == "" then
+        channel.toggleKey = nil
+    end
+    local colorIndex = tonumber(channel.colorIndex)
+    if colorIndex then
+        colorIndex = math.floor(colorIndex + 0.5)
+    end
+    if not colorIndex or colorIndex < 2 or colorIndex > (colorPaletteSize or 27) then
+        colorIndex = defaults.colorIndex or 7
+    end
+    channel.colorIndex = colorIndex
+    channel.size = Logic.clamp(tonumber(channel.size) or defaults.size or 48, 24, 300)
+    channel.x = Logic.clamp(
+        math.floor((tonumber(channel.x) or defaults.x or 100) + 0.5),
+        -1000,
+        1000
+    )
+    channel.y = Logic.clamp(
+        math.floor((tonumber(channel.y) or defaults.y or -180) + 0.5),
+        -1000,
+        1000
+    )
+    channel.point = type(channel.point) == "string" and channel.point or (defaults.point or "CENTER")
+    channel.relativePoint = type(channel.relativePoint) == "string" and channel.relativePoint
+        or (defaults.relativePoint or "CENTER")
+    channel.locked = channel.locked ~= false
+    channel.frameStrata = Logic.sanitizeFrameStrata(channel.frameStrata, defaults.frameStrata)
+    channel.frameLevel = Logic.sanitizeFrameLevel(channel.frameLevel, defaults.frameLevel)
+    return channel
 end
 
 local function applyVitalsPlacementChannel(target, source, fallback)
@@ -542,6 +770,8 @@ function Logic.captureCharPlacementFromSettings(settings)
                 DEFAULT_VITALS_PLACEMENT.power
             ),
         },
+        enemies = copyEnemiesPlacement(settings.enemies, DEFAULT_ENEMIES),
+        flag = copyFlagPlacement(settings.flag, DEFAULT_FLAG),
     }
 end
 
@@ -646,6 +876,10 @@ function Logic.applyCharPlacementToSettings(settings, placement)
         placeVitals.power,
         DEFAULT_VITALS_PLACEMENT.power
     )
+    settings.enemies = type(settings.enemies) == "table" and settings.enemies or {}
+    applyEnemiesPlacement(settings.enemies, placement.enemies, DEFAULT_ENEMIES)
+    settings.flag = type(settings.flag) == "table" and settings.flag or {}
+    applyFlagPlacement(settings.flag, placement.flag, DEFAULT_FLAG)
     return settings
 end
 
@@ -1102,6 +1336,12 @@ function Logic.sanitizeSettings(settings, config)
         channelDefaults("power"),
         config.colorPaletteSize
     )
+
+    local enemiesDefaults = type(config.enemiesDefaults) == "table" and config.enemiesDefaults or DEFAULT_ENEMIES
+    settings.enemies = sanitizeEnemies(settings.enemies, enemiesDefaults, config.colorPaletteSize)
+
+    local flagDefaults = type(config.flagDefaults) == "table" and config.flagDefaults or DEFAULT_FLAG
+    settings.flag = sanitizeFlag(settings.flag, flagDefaults, config.colorPaletteSize)
 
     return settings
 end

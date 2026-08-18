@@ -78,6 +78,19 @@ check("interrupt show when kickable", Logic.shouldShowInterruptIndicator(true, f
 check("interrupt hide when shielded", Logic.shouldShowInterruptIndicator(true, true, true) == false)
 check("interrupt hide when not casting", Logic.shouldShowInterruptIndicator(false, false, true) == false)
 check("interrupt hide when secret/inaccessible", Logic.shouldShowInterruptIndicator(true, false, false) == false)
+
+check("enemy cells cap at 5", Logic.filledEnemyCells(9, 5) == 5)
+check("enemy cells zero", Logic.filledEnemyCells(0, 5) == 0)
+check("enemy cells clamp negative", Logic.filledEnemyCells(-2, 5) == 0)
+check("enemy box combat only hides ooc", Logic.shouldShowEnemyBox(true, false, false, true, true) == false)
+check("enemy box combat only shows in combat", Logic.shouldShowEnemyBox(true, true, false, true, true) == true)
+check("enemy box always shows ooc", Logic.shouldShowEnemyBox(true, false, false, true, false) == true)
+check("enemy box disabled", Logic.shouldShowEnemyBox(false, true, false, true, false) == false)
+check("enemy box preview when unlocked", Logic.shouldShowEnemyBox(true, false, false, false, true) == true)
+check("flag box hidden when off", Logic.shouldShowFlagBox(false, false, true) == false)
+check("flag box shown when on", Logic.shouldShowFlagBox(true, false, true) == true)
+check("flag box preview when options open", Logic.shouldShowFlagBox(false, true, true) == true)
+check("flag box preview when unlocked", Logic.shouldShowFlagBox(false, false, false) == true)
 local iw, ih, ig = Logic.interruptBoxLayout(64)
 check("interrupt layout width", iw == 64)
 check("interrupt layout height", ih == 22)
@@ -899,6 +912,104 @@ check("vitals placement capture/apply round-trip",
         and placeLive.vitals.health.locked == false
         and placeLive.vitals.power.size == 60
         and placeLive.vitals.power.frameStrata == "HIGH")
+
+local enemyPlaceSource = {
+    enemies = {
+        enabled = true,
+        combatOnly = false,
+        colorIndex = 4,
+        width = 200,
+        height = 24,
+        x = 12,
+        y = -40,
+        locked = false,
+        point = "CENTER",
+        relativePoint = "CENTER",
+        frameStrata = "HIGH",
+        frameLevel = 70,
+    },
+    defense = {},
+    blacklist = {},
+    vitals = {health = {}, power = {}},
+}
+local enemyCaptured = Logic.captureCharPlacementFromSettings(enemyPlaceSource)
+enemyPlaceSource.enemies.combatOnly = true
+local enemyLive = {enemies = {}, defense = {}, blacklist = {}, vitals = {health = {}, power = {}}}
+Logic.applyCharPlacementToSettings(enemyLive, enemyCaptured)
+check("enemies placement round-trip",
+    enemyLive.enemies.combatOnly == false
+        and enemyLive.enemies.colorIndex == 4
+        and enemyLive.enemies.width == 200
+        and enemyLive.enemies.locked == false)
+
+local oldEnemyLive = {enemies = {}, defense = {}, blacklist = {}, vitals = {health = {}, power = {}}}
+Logic.applyCharPlacementToSettings(oldEnemyLive, {size = 40, defense = {}})
+check("placement without enemies fills defaults",
+    oldEnemyLive.enemies.enabled == true
+        and oldEnemyLive.enemies.combatOnly == true
+        and oldEnemyLive.enemies.width == 160)
+
+local flagPlaceSource = {
+    flag = {
+        enabled = true,
+        toggleKey = "SHIFT-F8",
+        colorIndex = 8,
+        size = 40,
+        x = 20,
+        y = -50,
+        locked = false,
+        point = "CENTER",
+        relativePoint = "CENTER",
+        frameStrata = "HIGH",
+        frameLevel = 70,
+    },
+    defense = {},
+    blacklist = {},
+    vitals = {health = {}, power = {}},
+    enemies = {},
+}
+local flagCaptured = Logic.captureCharPlacementFromSettings(flagPlaceSource)
+flagPlaceSource.flag.enabled = false
+local flagLive = {flag = {}, defense = {}, blacklist = {}, vitals = {health = {}, power = {}}, enemies = {}}
+Logic.applyCharPlacementToSettings(flagLive, flagCaptured)
+check("flag placement round-trip",
+    flagLive.flag.enabled == true
+        and flagLive.flag.toggleKey == "SHIFT-F8"
+        and flagLive.flag.colorIndex == 8
+        and flagLive.flag.size == 40
+        and flagLive.flag.locked == false)
+
+local oldFlagLive = {flag = {}, defense = {}, blacklist = {}, vitals = {health = {}, power = {}}, enemies = {}}
+Logic.applyCharPlacementToSettings(oldFlagLive, {size = 40, defense = {}})
+check("placement without flag fills defaults",
+    oldFlagLive.flag.enabled == false
+        and oldFlagLive.flag.colorIndex == 7
+        and oldFlagLive.flag.size == 48
+        and oldFlagLive.flag.toggleKey == nil)
+
+local flagSanitize = {flag = {enabled = true, colorIndex = 1, size = 8, toggleKey = ""}}
+Logic.sanitizeSettings(flagSanitize, baseConfig())
+check("flag sanitize opt-in and repairs color",
+    flagSanitize.flag.enabled == true
+        and flagSanitize.flag.colorIndex == 7
+        and flagSanitize.flag.size == 24
+        and flagSanitize.flag.toggleKey == nil)
+
+local flagOff = {flag = {enabled = false, colorIndex = 4}}
+Logic.sanitizeSettings(flagOff, baseConfig())
+check("flag enabled false kept", flagOff.flag.enabled == false and flagOff.flag.colorIndex == 4)
+
+local specIgnoresFlag = {
+    flag = {enabled = true, colorIndex = 8, toggleKey = "F8"},
+    mappings = {},
+}
+local capturedSpec = Logic.captureSpecFromSettings(specIgnoresFlag)
+check("spec capture omits flag", capturedSpec.flag == nil)
+Logic.applySpecToSettings(specIgnoresFlag, Logic.emptySpecProfile())
+check("applySpec leaves flag alone",
+    specIgnoresFlag.flag.enabled == true
+        and specIgnoresFlag.flag.colorIndex == 8
+        and specIgnoresFlag.flag.toggleKey == "F8")
 
 local oldPlacement = {size = 40, defense = {}, blacklistToggleKey = nil}
 local oldPlaceLive = {vitals = {health = {size = 99}, power = {}}, defense = {}, blacklist = {}}
